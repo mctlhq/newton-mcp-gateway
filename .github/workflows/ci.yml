@@ -45,3 +45,31 @@ jobs:
           done
           echo "got HTTP status: $status"
           [ -n "$status" ] && [ "$status" != "000" ]
+      - name: Smoke-check bare PORT override still works
+        run: |
+          cid="$(docker run -d -e PORT=9001 -p 9001:9001 newton-mcp-gateway:ci)"
+          trap 'docker stop "$cid" >/dev/null' EXIT
+          status=""
+          for _ in $(seq 1 30); do
+            status="$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:9001/mcp || true)"
+            if [ -n "$status" ] && [ "$status" != "000" ]; then
+              break
+            fi
+            sleep 1
+          done
+          echo "got HTTP status: $status"
+          [ -n "$status" ] && [ "$status" != "000" ]
+      - name: Smoke-check NEWTON_MCP_PORT wins over bare PORT
+        run: |
+          cid="$(docker run -d -e NEWTON_MCP_PORT=9002 -e PORT=9001 -p 9002:9002 newton-mcp-gateway:ci)"
+          trap 'docker stop "$cid" >/dev/null' EXIT
+          status=""
+          for _ in $(seq 1 30); do
+            status="$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:9002/mcp || true)"
+            if [ -n "$status" ] && [ "$status" != "000" ]; then
+              break
+            fi
+            sleep 1
+          done
+          echo "got HTTP status: $status"
+          [ -n "$status" ] && [ "$status" != "000" ]

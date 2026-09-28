@@ -30,11 +30,13 @@ The gateway speaks two transports, selected by `NEWTON_MCP_TRANSPORT`:
 | Value | Default | Notes |
 |---|---|---|
 | `stdio` | yes | For local MCP hosts (Claude Desktop, Claude Code). |
-| `streamable-http` | no | Serves `/mcp` over HTTP; binds `HOST`/`PORT` (default `127.0.0.1:8000`). |
+| `streamable-http` | no | Serves `/mcp` over HTTP; binds `NEWTON_MCP_HOST`/`NEWTON_MCP_PORT` (default `127.0.0.1:8000`; bare `HOST`/`PORT` still accepted as a fallback). |
 
-The Docker image overrides these at the image level (`NEWTON_MCP_TRANSPORT=streamable-http`,
-`HOST=0.0.0.0`, `PORT=8000`) so `docker run -p 8000:8000 <image>` serves HTTP out of the box,
-while a bare `uv run newton-mcp` outside the container still speaks `stdio`.
+The Docker image ships the bare `HOST=0.0.0.0`/`PORT=8000` as compatibility defaults at the
+image level (alongside `NEWTON_MCP_TRANSPORT=streamable-http`), so `docker run -p 8000:8000
+<image>` serves HTTP out of the box, while a bare `uv run newton-mcp` outside the container
+still speaks `stdio`. Override the bind address with `-e NEWTON_MCP_HOST=...`/
+`-e NEWTON_MCP_PORT=...`, which win over the image's bare defaults.
 
 ## Regenerating the JSON schema
 
