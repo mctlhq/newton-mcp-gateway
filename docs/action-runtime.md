@@ -1,10 +1,11 @@
-# Action runtime: MCP host, tool discovery and deterministic capability resolver
+# Action runtime: MCP host, tool discovery, policy and context-bound approval
 
-> This document describes `src/newton_mcp/runtime/`, **this project's experimental proposal**
-> for Direction A (MCP as Newton's action boundary). It is not an Archetype standard, and
-> nothing described here has been run against a live Newton account or a live MCP actuator
-> server. Everything in this package is **discovery and resolution only** -- it executes
-> nothing: no `call_tool`, no policy evaluation, no approval, no lifecycle, no audit, no LLM.
+> This document describes `src/newton_mcp/runtime/` and `src/newton_mcp/action/policy.py` /
+> `src/newton_mcp/action/approval.py`, **this project's experimental proposal** for Direction A
+> (MCP as Newton's action boundary). It is not an Archetype standard, and nothing described here
+> has been run against a live Newton account or a live MCP actuator server. This package
+> discovers tools, resolves candidates, decides auto/confirm/deny and can bind an approval to one
+> exact action -- it still executes nothing: no `call_tool`, no lifecycle, no audit, no LLM.
 
 ## Why this exists
 
@@ -84,11 +85,40 @@ servers are still discovered.
 
 The catalog also records each server's observed MCP `serverInfo` (`name`, `version`) from the
 initialize handshake, as **metadata only** -- neither the catalog nor the resolver filters,
-ranks or identifies on it. `CandidateAction.server_identity` always stays the configured
-identity from `runtime.yaml`. What a server's canonical identity is (config label, transport
-fingerprint, observed `serverInfo`, or some combination) and what an approval binds to is a
-question for a later, security-relevant proposal -- this package only makes the observed value
-available.
+ranks or identifies on it, and it is never used for an approval binding (see below): it is
+self-asserted by the remote server during the handshake, so a substitute server could echo
+whatever `name`/`version` an approval expects, and a benign version bump would otherwise
+invalidate every live approval. `CandidateAction.server_identity` always stays the configured
+identity from `runtime.yaml`, for display and logs.
+
+### Server identity in an approval binding
+
+An approval (below) needs a stronger identity than the configured label alone. If it bound only
+to `server_identity`, re-pointing a server's `url`/`command`/`args` under an unchanged `name`
+would leave every outstanding approval valid against a substituted server -- the approval would
+become a bearer token for a tool *name*, not for a tool. `ServerConfig.binding_identity` closes
+that gap: it is `f"{resolved_identity}@sha256:{transport_fingerprint}"`, where
+`transport_fingerprint` is a sha256 of the server's declared transport:
+
+- `streamable-http`: `{"kind": "streamable-http", "url": <canonical url>}`. Canonicalisation
+  lowercases only the scheme and the host-name part of the netloc, and elides a port equal to the
+  scheme default (443 for `https`, 80 for `http`). Userinfo (`user:pass@`), IPv6 brackets, path,
+  query and fragment stay byte-exact -- two URLs that differ only in userinfo fingerprint
+  differently. Nothing else is normalised, so percent-encoding and trailing-slash differences
+  also fingerprint differently: the failure mode is a spuriously invalidated approval, never a
+  spuriously valid one.
+- `stdio`: `{"kind": "stdio", "command": ..., "args": [...], "env": {...}}`, with `command`,
+  `args`, and the **full `env` mapping (names and values)** byte-exact -- no `PATH` lookup, no
+  filesystem resolution. A stdio server's target is often configured through `env` (e.g.
+  `HA_URL`), so this fingerprint cannot tell a credential rotation from an endpoint change;
+  rotating an env value therefore also invalidates outstanding approvals, which is accepted as
+  fail-safe for short-lived approvals. Env values enter only the sha256 input: they never appear
+  in `binding_identity`, an `Approval`, a reason string, or a log line.
+
+`CandidateAction.server_binding_identity` carries this composite value alongside the unchanged
+`server_identity` label. Changing a server's `url`, `command`, `args`, or any `env` name or value
+under an unchanged `name`/`identity` therefore invalidates every approval issued before the
+change.
 
 ## The resolver: deterministic, synchronous, explainable
 
@@ -135,12 +165,86 @@ template root: tool arguments must never be derived from the verification sectio
 root, or a `constraints.<key>` the contract does not carry, is rejected as a `template_error`
 naming the exact placeholder -- never guessed, defaulted, or silently dropped.
 
+## Policy: `policy.yaml`
+
+Set `NEWTON_MCP_POLICY_PATH` to the path of a policy file and load it with
+`newton_mcp.action.load_policy()`. See `examples/policy.example.yaml` for a full, safe example.
+Like `runtime.yaml`, every model forbids unknown keys and there is no fallback to a default: a
+policy file that fails to load or fails its schema raises loudly, and `Policy.conservative()` is
+never an implicit fallback -- it is only ever returned when a caller asks for it by name.
+
+```yaml
+policy_version: "example.v1"   # required, non-empty; pinned by an Approval
+default: deny                  # decision when no rule matches
+rules:
+  - name: hvac-within-comfort-band
+    goal_prefix: reduce_room_temperature
+    tool_name: set_target_temperature
+    max_risk: low
+    min_confidence: 0.8
+    arg_ranges:
+      target_temperature_c: { min: 20, max: 25 }   # inclusive
+    decision: auto
+```
+
+`Policy.evaluate(contract, candidate=None)` decides in this order:
+
+1. `contract.risk is critical` always denies, before any rule is consulted.
+2. Rules are walked in file order; the first one whose predicates all match wins. Predicates,
+   checked in order: `goal_prefix` (a prefix of `contract.goal`), `tool_name` (exact,
+   case-sensitive match against `candidate.tool_name`), `max_risk` (a ceiling on
+   `contract.risk`), `min_confidence` (a floor on `contract.confidence` -- a `None` confidence
+   never satisfies a non-zero floor), then `arg_ranges` last, evaluated only once every earlier
+   predicate matched. A rule declaring `tool_name` or `arg_ranges` never matches when no
+   `candidate` was supplied, so evaluation falls through toward `default` rather than matching on
+   fewer predicates than it declares. An `arg_ranges` check that finds a missing argument, a
+   non-numeric value (a `bool` does not count, even though it subclasses `int`), or a value
+   outside its inclusive bound returns `deny` **immediately**, naming the argument -- it never
+   falls through to a later, broader rule that would have auto-approved the very value this rule
+   forbade.
+3. No rule matched: `self.default` (itself defaults to `deny`).
+4. A confirmation ceiling applies to whatever decision was reached in 2 or 3: if
+   `contract.requires_confirmation` is true, an `auto` decision is raised to `confirm`; `confirm`
+   and `deny` pass through unchanged. This is a ceiling, not an upgrade -- a model-authored
+   contract flag must never be able to grant more authority than the operator's rules do, so a
+   `deny` outcome stays `deny` even when the contract also asks for confirmation.
+
+## Approval: binding to one exact action
+
+`src/newton_mcp/action/approval.py` defines `Approval`, `compute_binding`, `create_approval` and
+`verify_approval`. An `Approval.binding` is a sha256 over the canonical JSON of exactly
+`{server_identity, tool_name, args, action_id, policy_version, expires_at}` -- `server_identity`
+here is `candidate.server_binding_identity`, the full `args` mapping (not its digest) enters, and
+`expires_at` is rendered via the canonical timestamp form (`src/newton_mcp/canonical.py`, aware
+datetimes only, UTC, `YYYY-MM-DDTHH:MM:SS.ffffffZ`). `approved_by`, `approved_at` and
+`approval_id` are deliberately **not** bound -- audit and an authenticated approver are issue #7's
+concern, not this one's.
+
+**`binding` is context-binding, not authentication.** A keyless sha256 proves which exact action
+an approval covers -- it does not prove who granted it. Anyone able to construct an `Approval`
+can compute a valid `binding`; signed approvals and an authenticated approver stay out of scope.
+
+`verify_approval(approval, candidate, action_id, policy_version, now)` returns valid only if
+`now` is before `approval.expires_at` and the binding recomputed from `candidate`, `action_id`,
+`policy_version` and `approval.expires_at` equals the stored `binding`, checked with
+`hmac.compare_digest`. Any single differing field in the binding payload -- `server_identity`
+(so a re-pointed server invalidates it), `tool_name`, any one entry of `args`, `action_id`, or
+`policy_version` -- makes verification fail; so does a mutated `expires_at`, even to a
+still-future timestamp, because `expires_at` is itself part of the payload the binding covers. A
+naive `now` raises rather than silently comparing. A failure's reason names the failing field but
+never echoes an `args` value.
+
 ## What this package does not do
 
 - Execute tools (`call_tool`), retry, or change the physical world in any way.
-- Evaluate policy, bind an approval, track an action's lifecycle, or verify an outcome.
+- Track an action's lifecycle, audit an approval, or verify a physical outcome.
+- Enforce that a caller hands `verify_approval` the `policy_version` of the policy currently
+  loaded -- it only makes a mismatch detectable; wiring that coupling in is a later, executor
+  issue.
+- Revoke an approval, or give it single-use/nonce semantics.
 - Match capabilities with an LLM or an embedding model -- v0 is purely deterministic.
-- Expose itself as MCP tools, or wire into `create_server()` / `newton_mcp.config.Settings`.
+- Expose itself as MCP tools, or wire into `create_server()` / `newton_mcp.config.Settings`. No
+  new MCP tool is registered for approving an action.
 - Hold long-lived MCP sessions, pool connections, or reconnect with backoff.
 
 See `docs/architecture.md` for how this fits into the full proposed pipeline (capability

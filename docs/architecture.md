@@ -37,7 +37,7 @@ Newton / Newton Agent
   Action Runtime  ── MCP client ──► MCP servers (how it happens)
    ├─ capability resolver   (discover tools, match target/location/args)
    ├─ policy engine         (auto / confirm / deny)        ← implemented, deterministic
-   ├─ approval              (tied to the exact normalized action)
+   ├─ approval              (tied to the exact normalized action)  ← implemented, see below
    ├─ executor              (MCP tool calls, idempotent where possible)
    └─ verifier              (observe → did the physical outcome happen? → retry / escalate)
         │
@@ -61,4 +61,7 @@ Correlation ids to carry through every step: `observation_id`, `action_id`, `too
 | disable safety system | deny |
 
 `critical` risk is never automated regardless of policy. Approval is invalidated if parameters
-change after it was granted.
+change after it was granted: `newton_mcp.action.compute_binding` hashes `server_identity`,
+`tool_name`, `args`, `action_id`, `policy_version` and `expires_at` together, so any one of them
+changing -- including the server being re-pointed to a different transport under the same
+configured name -- makes `verify_approval` reject it. See `docs/action-runtime.md`.

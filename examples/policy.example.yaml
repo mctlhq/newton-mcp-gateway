@@ -1,0 +1,34 @@
+# Example policy.yaml -- a reviewable, versioned policy for the action runtime.
+#
+# Safe demo capabilities only, per the epic's hard rule: no lock, oven, alarm,
+# industrial start/stop or safety-system tool belongs in this file, ever. See
+# docs/action-runtime.md for the decision matrix this feeds and
+# examples/runtime.example.yaml for the capabilities these rules govern.
+#
+# Rules are evaluated in file order; the first match wins. `default: deny`
+# means anything not explicitly allowed here is denied.
+
+policy_version: "example.v1"
+default: deny
+
+rules:
+  - name: hvac-within-comfort-band
+    goal_prefix: reduce_room_temperature
+    tool_name: set_target_temperature
+    max_risk: low
+    min_confidence: 0.8
+    arg_ranges:
+      target_temperature_c: { min: 20, max: 25 }
+    decision: auto
+
+  - name: lighting
+    tool_name: set_light_state
+    max_risk: low
+    min_confidence: 0.8
+    decision: auto
+
+  - name: announcements
+    goal_prefix: announce
+    tool_name: announce
+    max_risk: low
+    decision: confirm
