@@ -16,8 +16,9 @@ jobs:
       pull-requests: write
       issues: write
       id-token: write
-      # Private repository: claude-code-action reads its own workflow run for the
-      # job link, which answers 403 here without this scope (see projects-mcp #1).
+      # claude-code-action reads its own workflow run for the job link; that read
+      # answers 403 on a private repository without this scope. Kept so the
+      # reviewer keeps working if visibility ever changes.
       actions: read
     with:
       allowed-bots: "mctl-claude-remote,github-actions,dependabot,mctl-agents"

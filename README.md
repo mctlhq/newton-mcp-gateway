@@ -40,7 +40,7 @@ good foundation for that boundary.
 ## Quickstart (no credentials needed)
 
 ```bash
-git clone https://github.com/mashkovd/newton-mcp-gateway
+git clone https://github.com/mctlhq/newton-mcp-gateway
 cd newton-mcp-gateway
 uv sync
 NEWTON_BACKEND=mock uv run newton-mcp        # stdio MCP server
