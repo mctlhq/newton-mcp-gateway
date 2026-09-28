@@ -8,8 +8,10 @@ from __future__ import annotations
 
 import base64
 import binascii
+import copy
 import hashlib
 import itertools
+import json
 import math
 
 from newton_mcp.newton.models import (
@@ -60,6 +62,8 @@ class MockNewtonBackend:
                 f"Received file_id={image_file_id!r} and question={request.query!r}. "
                 "Set NEWTON_BACKEND=api with an authorized ATAI_API_KEY for real inference."
             ]
+        elif _is_contract_proposal(request):
+            outputs = [json.dumps(_mock_contract_output())]
         else:
             n_events = len(request.events)
             n_files = len(request.file_ids)
@@ -94,3 +98,26 @@ class MockNewtonBackend:
             base = int.from_bytes(seed[:8], "big")
             result.append([math.sin(base * 1e-9 + i * 0.01) for i in range(OMEGA_DIM)])
         return result
+
+
+def _is_contract_proposal(request: NewtonQueryRequest) -> bool:
+    # Function-local import to avoid a package-level cycle between newton/ and
+    # action/, matching the established pattern in newton/api.py's build_backend.
+    from newton_mcp.action.prompts import CONTRACT_PROMPT_MARKER
+
+    return CONTRACT_PROMPT_MARKER in request.system_prompt or CONTRACT_PROMPT_MARKER in request.instruction_prompt
+
+
+def _mock_contract_output() -> dict:
+    """The repo's example contract, labelled as mock via a `[mock] ` reason prefix.
+
+    Pure JSON (not `[mock]`-prefixed prose) so `propose_action`'s strict
+    parser -- the same parser the real backend goes through -- can parse it.
+    The mock label travels with the artifact through `contract.reason` and
+    `backend: "mock"` in the caller's envelope.
+    """
+    from newton_mcp.action.examples import MOCK_CONTRACT_EXAMPLE
+
+    contract = copy.deepcopy(MOCK_CONTRACT_EXAMPLE)
+    contract["reason"] = "[mock] " + contract["reason"]
+    return contract

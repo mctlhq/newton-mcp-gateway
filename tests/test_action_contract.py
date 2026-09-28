@@ -5,6 +5,7 @@ import pytest
 from pydantic import ValidationError
 
 from newton_mcp.action import Decision, PhysicalActionContract, Policy, Risk
+from newton_mcp.action.examples import MOCK_CONTRACT_EXAMPLE
 
 EXAMPLE = Path(__file__).parent.parent / "examples" / "physical-action.json"
 SCHEMA = Path(__file__).parent.parent / "schemas" / "physical-action-contract.schema.json"
@@ -18,6 +19,10 @@ def test_example_contract_validates():
 
 def test_schema_file_is_in_sync_with_model():
     assert json.loads(SCHEMA.read_text()) == PhysicalActionContract.model_json_schema()
+
+
+def test_mock_contract_example_is_in_sync_with_example_file():
+    assert MOCK_CONTRACT_EXAMPLE == json.loads(EXAMPLE.read_text())
 
 
 def test_confidence_bounds():

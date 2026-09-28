@@ -98,6 +98,7 @@ Deliberately few. Each maps to a documented Direct Query pattern.
 | `newton_query` | Newton C (text / image / video reasoning) | Natural-language question grounded in inline text/JSON events or uploaded `file_ids`. Use `system_prompt` to force structured JSON. |
 | `newton_embed_timeseries` | Omega encoder | Channel-first sensor window → one 768-dim embedding per channel. |
 | `newton_analyze_image` | Newton C (image reasoning) | Ask a question about one image: inline `image_base64`/`mime_type` (sent as a `data.base64_img` event) or an existing `file_id`. Stateless — never uploads or stores anything. See `docs/newton-api-notes.md` for the documented fields this tool sends. |
+| `newton_propose_action` | Newton C (text reasoning) | Read-only: observation → exactly one validated Physical Action Contract, or a failure with the raw model text. Proposes only; executes nothing. |
 
 Planned (see issues): running Newton Agent bundles (`osm`, `anomaly-discovery`,
 `rare-event-detection`, `task-verification`) and paging their results.
@@ -136,6 +137,17 @@ contract → capability match (MCP tool discovery) → policy (auto / confirm / 
 The contract can be produced by a Newton `/query` with a strict JSON system prompt — a documented
 usage pattern — or by a Newton Agent's output. The policy engine in `newton_mcp/action/` is a
 deterministic first cut. The runtime, capability resolver and verifier are the next phases.
+
+The `newton_propose_action` MCP tool implements the first link of that chain: it sends the caller's
+observation (`text_events` / `json_events`) to Newton C with a strict JSON system prompt that embeds
+the contract's schema verbatim and, when `allowed_goals` is given, restricts which goals the model
+may propose. The model's response is parsed with no repair — no fence stripping, no substring
+extraction. If it does not validate against `PhysicalActionContract`, the tool retries exactly once
+with the validation errors appended to the prompt, then gives up: it returns `status: "failed"` with
+the raw model text and the accumulated errors, never a guessed or partially filled contract. A
+backend-reported failure is terminal with no retry. This is mock-validated only — the mock backend
+returns the repo's example contract, clearly labelled `backend: "mock"` and with `reason` prefixed
+`[mock] `, so it can never be mistaken for real inference.
 
 The first real actuator testbed is a smart-home MCP server (lights, HVAC, speaker), chosen because it
 is real hardware with benign, reversible actions. The interface itself is domain-independent:

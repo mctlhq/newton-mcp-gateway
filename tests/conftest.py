@@ -4,6 +4,7 @@ import pytest
 
 from newton_mcp.config import Settings
 from newton_mcp.newton.mock import MockNewtonBackend
+from newton_mcp.newton.models import ImageUpload, NewtonQueryRequest, NewtonQueryResult, UploadedFile
 from newton_mcp.newton.protocol import NewtonBackend
 from newton_mcp.server import AppState, create_server
 
@@ -11,6 +12,45 @@ from newton_mcp.server import AppState, create_server
 @pytest.fixture
 def mock_backend() -> MockNewtonBackend:
     return MockNewtonBackend()
+
+
+class ScriptedNewtonBackend:
+    """A `NewtonBackend` driven by a queue of scripted `NewtonQueryResult` outputs.
+
+    Each entry in `outputs` is passed to `NewtonQueryResult(backend="api",
+    query_id=..., model=request.model, **entry)`, so a test can script
+    `{"status": "completed", "outputs": [...]}` or `{"status": "failed",
+    "outputs": [...], "error": "..."}`. Raises `AssertionError` if queried
+    more times than scripted, so an over-eager retry is caught immediately.
+    """
+
+    name = "api"
+
+    def __init__(self, outputs: list[dict]) -> None:
+        self._outputs = list(outputs)
+        self.requests: list[NewtonQueryRequest] = []
+
+    async def query(self, request: NewtonQueryRequest) -> NewtonQueryResult:
+        self.requests.append(request)
+        if not self._outputs:
+            raise AssertionError(
+                f"ScriptedNewtonBackend queried {len(self.requests)} times but only "
+                f"{len(self.requests) - 1} outputs were scripted"
+            )
+        entry = self._outputs.pop(0)
+        return NewtonQueryResult(
+            backend="api",
+            query_id=f"scripted-{len(self.requests):06d}",
+            model=request.model,
+            inference_time_sec=0.0,
+            **entry,
+        )
+
+    async def upload_image(self, image: ImageUpload) -> UploadedFile:
+        raise NotImplementedError("ScriptedNewtonBackend does not support upload_image")
+
+    async def aclose(self) -> None:
+        return None
 
 
 @pytest.fixture
