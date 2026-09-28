@@ -46,7 +46,7 @@ class Evidence(BaseModel):
 class PhysicalActionContract(BaseModel):
     """Tool-independent description of a desired physical-world outcome."""
 
-    model_config = ConfigDict(json_schema_extra={"$id": "https://github.com/mashkovd/newton-mcp-gateway/schemas/physical-action-contract.schema.json"})
+    model_config = ConfigDict(json_schema_extra={"$id": "https://github.com/mctlhq/newton-mcp-gateway/schemas/physical-action-contract.schema.json"})
 
     version: str = Field(default="0.1", pattern=r"^0\.1$")
     goal: str = Field(description="Desired outcome, independent of any specific tool.")
