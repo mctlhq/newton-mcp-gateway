@@ -1,0 +1,16 @@
+{
+  "version": "0.1",
+  "goal": "reduce_room_temperature",
+  "reason": "The occupied kitchen reached 29.4 C while the previous window was unoccupied.",
+  "confidence": 0.96,
+  "target": { "type": "environment", "location": "kitchen" },
+  "constraints": {
+    "desired_temperature_c": 23,
+    "minimum_temperature_c": 20,
+    "maximum_temperature_c": 25
+  },
+  "risk": "low",
+  "reversible": true,
+  "verification": { "condition": "temperature_c <= 24", "timeout_seconds": 600, "retry_limit": 1 },
+  "evidence": { "observation_id": "obs-2026-09-28-0001", "summary": "occupancy=true, temperature_c=29.4" }
+}
