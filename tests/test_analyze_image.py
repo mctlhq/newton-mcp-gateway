@@ -170,8 +170,10 @@ async def test_oversize_image_rejected_before_request(mock_backend: MockNewtonBa
         )
     cause = _root_cause(ei.value)
     assert isinstance(cause, ValueError)
-    assert str(len(TINY_PNG)) in str(cause)
-    assert "4" in str(cause)
+    # TINY_PNG's encoding is far past the 8-character bound for a 4-byte limit, so the
+    # pre-decode length check rejects it; the post-decode check has its own test below.
+    assert str(len(TINY_PNG_B64)) in str(cause)
+    assert "4 byte limit" in str(cause)
     assert "NEWTON_MAX_IMAGE_BYTES" in str(cause)
     assert mock_backend.requests == []
 
@@ -188,3 +190,61 @@ async def test_invalid_base64_error_does_not_echo_payload(mock_backend: MockNewt
     cause = _root_cause(ei.value)
     assert isinstance(cause, ValueError)
     assert garbage not in str(cause)
+
+
+# --- P2 regression: encoded-length bound runs before decoding -----------------
+
+
+async def test_oversize_payload_rejected_before_decoding(mock_backend: MockNewtonBackend, monkeypatch):
+    import newton_mcp.server as server_module
+
+    def _no_decode(*args, **kwargs):
+        raise AssertionError("b64decode must not run for an oversized payload")
+
+    monkeypatch.setattr(server_module.base64, "b64decode", _no_decode)
+    settings = Settings(max_image_bytes=6)
+    server = create_server(settings, backend=mock_backend)
+    payload = "A" * 12  # 12 chars > 4 * ceil(6 / 3) == 8
+    with pytest.raises(Exception) as ei:
+        await call_tool(
+            server, settings, mock_backend, "newton_analyze_image",
+            {"question": "q", "image_base64": payload, "mime_type": "image/png"},
+        )
+    cause = _root_cause(ei.value)
+    assert isinstance(cause, ValueError)
+    assert "NEWTON_MAX_IMAGE_BYTES" in str(cause)
+    assert payload not in str(cause)
+    assert mock_backend.requests == []
+
+
+@pytest.mark.parametrize("limit", [1, 2, 3, 4, 5, 6, 7])
+async def test_payload_at_exact_limit_passes_pre_decode_bound(mock_backend: MockNewtonBackend, limit):
+    settings = Settings(max_image_bytes=limit)
+    server = create_server(settings, backend=mock_backend)
+    payload = base64.b64encode(b"\xff" * limit).decode()
+    result = await call_tool(
+        server, settings, mock_backend, "newton_analyze_image",
+        {"question": "q", "image_base64": payload, "mime_type": "image/png"},
+    )
+    assert result.structured_content["backend"] == "mock"
+    assert f"({limit} bytes decoded)" in result.structured_content["outputs"][0]
+    assert len(mock_backend.requests) == 1
+
+
+@pytest.mark.parametrize("limit", [4, 5, 7])
+async def test_one_byte_over_limit_caught_by_post_decode_check(mock_backend: MockNewtonBackend, limit):
+    # limit + 1 bytes still fits in 4 * ceil(limit / 3) characters for these limits,
+    # so only the post-decode check can reject it.
+    settings = Settings(max_image_bytes=limit)
+    server = create_server(settings, backend=mock_backend)
+    payload = base64.b64encode(b"\xff" * (limit + 1)).decode()
+    assert len(payload) <= 4 * ((limit + 2) // 3)
+    with pytest.raises(Exception) as ei:
+        await call_tool(
+            server, settings, mock_backend, "newton_analyze_image",
+            {"question": "q", "image_base64": payload, "mime_type": "image/png"},
+        )
+    cause = _root_cause(ei.value)
+    assert isinstance(cause, ValueError)
+    assert f"decoded image is {limit + 1} bytes" in str(cause)
+    assert mock_backend.requests == []

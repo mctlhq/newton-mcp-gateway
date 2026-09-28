@@ -155,13 +155,25 @@ def create_server(settings: Settings | None = None, backend: NewtonBackend | Non
             payload = image_base64
             if payload.startswith("data:") and ";base64," in payload:
                 payload = payload.split(";base64,", 1)[1]
+            # Bound the encoded length before decoding so an oversized payload is
+            # rejected without being materialised in memory. Strict (validate=True)
+            # base64 of n bytes is exactly 4 * ceil(n / 3) characters, so any valid
+            # payload longer than that decodes to more than max_image_bytes.
+            max_bytes = state.settings.max_image_bytes
+            max_encoded_len = 4 * ((max_bytes + 2) // 3)
+            if len(payload) > max_encoded_len:
+                raise ValueError(
+                    f"image_base64 is {len(payload)} characters, longer than the {max_encoded_len} "
+                    f"characters that can encode the {max_bytes} byte limit; "
+                    "raise NEWTON_MAX_IMAGE_BYTES to allow larger images"
+                )
             try:
                 raw = base64.b64decode(payload, validate=True)
             except (binascii.Error, ValueError) as exc:
                 raise ValueError(f"image_base64 is not valid base64: {exc}") from None
-            if len(raw) > state.settings.max_image_bytes:
+            if len(raw) > max_bytes:
                 raise ValueError(
-                    f"decoded image is {len(raw)} bytes, exceeding the {state.settings.max_image_bytes} "
+                    f"decoded image is {len(raw)} bytes, exceeding the {max_bytes} "
                     "byte limit; raise NEWTON_MAX_IMAGE_BYTES to allow larger images"
                 )
             events = [DataEvent.base64_img(base64.b64encode(raw).decode())]
