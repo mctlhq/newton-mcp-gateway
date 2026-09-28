@@ -3,7 +3,12 @@ from newton_mcp import server as server_module
 
 async def test_lists_exactly_the_documented_tools(server):
     names = {t.name for t in await server.list_tools()}
-    assert names == {"newton_query", "newton_embed_timeseries", "newton_analyze_image"}
+    assert names == {
+        "newton_query",
+        "newton_embed_timeseries",
+        "newton_analyze_image",
+        "newton_propose_action",
+    }
 
 
 async def test_tools_are_marked_read_only(server):

@@ -16,6 +16,7 @@ from mcp.server.mcpserver import Context, MCPServer
 from mcp.types import ToolAnnotations
 
 from newton_mcp import __version__
+from newton_mcp.action.propose import propose_action
 from newton_mcp.config import Settings
 from newton_mcp.newton.api import build_backend
 from newton_mcp.newton.models import IMAGE_FILE_EXTENSIONS, IMAGE_MIME_EXTENSIONS, DataEvent, NewtonQueryRequest
@@ -200,6 +201,38 @@ def create_server(settings: Settings | None = None, backend: NewtonBackend | Non
         )
         result = await state.backend.query(request)
         return result.model_dump(exclude={"raw"})
+
+    @server.tool(
+        name="newton_propose_action",
+        description=(
+            "Propose exactly one validated Physical Action Contract from a physical-world "
+            "observation, by calling Newton C with a strict JSON system prompt. Returns either "
+            "a schema-valid contract or a failure with the raw model text and validation errors "
+            "-- never a guessed, defaulted or partially filled contract. This tool only "
+            "proposes an action; it never executes or authorises one."
+        ),
+        annotations=ToolAnnotations(read_only_hint=True, open_world_hint=True),
+    )
+    async def newton_propose_action(
+        ctx: Context,
+        text_events: list[str] | None = None,
+        json_events: list[str] | None = None,
+        allowed_goals: list[str] | None = None,
+        observation_id: str | None = None,
+        max_new_tokens: int = 700,
+        model: str | None = None,
+    ) -> dict[str, Any]:
+        state = _state(ctx)
+        result = await propose_action(
+            state.backend,
+            model=model or state.settings.text_model,
+            text_events=text_events or [],
+            json_events=json_events or [],
+            allowed_goals=allowed_goals,
+            observation_id=observation_id,
+            max_new_tokens=max_new_tokens,
+        )
+        return result.model_dump()
 
     return server
 
