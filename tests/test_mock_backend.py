@@ -1,5 +1,5 @@
 from newton_mcp.newton.mock import OMEGA_DIM, MockNewtonBackend
-from newton_mcp.newton.models import DataEvent, NewtonQueryRequest
+from newton_mcp.newton.models import DataEvent, ImageUpload, NewtonQueryRequest
 
 
 async def test_text_query_is_clearly_mock(mock_backend: MockNewtonBackend):
@@ -22,3 +22,10 @@ def test_payload_matches_documented_shape():
     assert p["model"] == "m" and p["file_ids"] == ["a.png"]
     assert p["events"] == [{"type": "data.text", "event_data": {"contents": "hello"}}]
     assert p["sanitize_response"] is False
+
+
+async def test_mock_upload_image_is_deterministic_and_obviously_fake(mock_backend: MockNewtonBackend):
+    a = await mock_backend.upload_image(ImageUpload(data=b"x", mime_type="image/png"))
+    b = await mock_backend.upload_image(ImageUpload(data=b"y", mime_type="image/jpeg"))
+    assert a.backend == "mock" and a.file_id == "mock-image-000001.png"
+    assert b.backend == "mock" and b.file_id == "mock-image-000002.jpg"
