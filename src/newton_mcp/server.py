@@ -117,7 +117,12 @@ def create_server(settings: Settings | None = None, backend: NewtonBackend | Non
 
 
 def main() -> None:
-    create_server().run(transport="stdio")
+    settings = Settings.from_env()
+    server = create_server(settings)
+    if settings.transport == "streamable-http":
+        server.run(transport="streamable-http", host=settings.host, port=settings.port)
+    else:
+        server.run(transport="stdio")
 
 
 if __name__ == "__main__":

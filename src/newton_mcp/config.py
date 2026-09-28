@@ -11,6 +11,7 @@ from dataclasses import dataclass
 from typing import Literal
 
 Backend = Literal["mock", "api"]
+Transport = Literal["stdio", "streamable-http"]
 
 DEFAULT_ENDPOINT = "https://api.u1.archetypeai.app/v0.5"
 DEFAULT_TEXT_MODEL = "Newton::c2_5_8b_260413b723a9ab"
@@ -25,6 +26,9 @@ class Settings:
     text_model: str = DEFAULT_TEXT_MODEL
     omega_model: str = DEFAULT_OMEGA_MODEL
     request_timeout_sec: float = 90.0
+    transport: Transport = "stdio"
+    host: str = "127.0.0.1"
+    port: int = 8000
 
     @classmethod
     def from_env(cls, env: dict[str, str] | None = None) -> "Settings":
@@ -35,6 +39,19 @@ class Settings:
         api_key = env.get("ATAI_API_KEY") or None
         if backend == "api" and not api_key:
             raise ValueError("NEWTON_BACKEND=api requires ATAI_API_KEY")
+        transport = env.get("NEWTON_MCP_TRANSPORT", "stdio").strip().lower()
+        if transport not in ("stdio", "streamable-http"):
+            raise ValueError(
+                f"NEWTON_MCP_TRANSPORT must be 'stdio' or 'streamable-http', got {transport!r}"
+            )
+        host = env.get("HOST", "127.0.0.1").strip() or "127.0.0.1"
+        port_raw = env.get("PORT", "8000").strip()
+        try:
+            port = int(port_raw)
+        except ValueError:
+            raise ValueError(f"PORT must be an integer, got {port_raw!r}") from None
+        if not 1 <= port <= 65535:
+            raise ValueError(f"PORT must be in 1-65535, got {port}")
         return cls(
             backend=backend,  # type: ignore[arg-type]
             api_key=api_key,
@@ -42,4 +59,7 @@ class Settings:
             text_model=env.get("NEWTON_TEXT_MODEL", DEFAULT_TEXT_MODEL),
             omega_model=env.get("NEWTON_OMEGA_MODEL", DEFAULT_OMEGA_MODEL),
             request_timeout_sec=float(env.get("NEWTON_REQUEST_TIMEOUT_SEC", "90")),
+            transport=transport,  # type: ignore[arg-type]
+            host=host,
+            port=port,
         )

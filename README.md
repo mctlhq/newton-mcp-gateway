@@ -66,6 +66,29 @@ With real Newton access (variable names follow Archetype's docs):
 NEWTON_BACKEND=api ATAI_API_KEY=... ATAI_API_ENDPOINT=https://api.u1.archetypeai.app/v0.5 uv run newton-mcp
 ```
 
+## Running over HTTP (streamable-http)
+
+The gateway defaults to the `stdio` transport for local MCP hosts. To reach it over HTTP
+instead — for a host that is not a local Claude Desktop process on the same machine — set
+`NEWTON_MCP_TRANSPORT=streamable-http`:
+
+```bash
+NEWTON_BACKEND=mock NEWTON_MCP_TRANSPORT=streamable-http PORT=8000 uv run newton-mcp
+# -> http://127.0.0.1:8000/mcp
+```
+
+Or run the container, which enables streamable-http by default:
+
+```bash
+docker build -t newton-mcp-gateway .
+docker run --rm -p 8000:8000 newton-mcp-gateway
+# -> http://127.0.0.1:8000/mcp
+```
+
+The container binds `0.0.0.0`, which is intended for a container network. The gateway
+ships no authentication, so exposing it to an untrusted network is the operator's
+responsibility — put a proxy or firewall in front of it.
+
 ## Tools
 
 Deliberately few. Each maps to a documented Direct Query pattern.
