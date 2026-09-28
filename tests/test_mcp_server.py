@@ -3,12 +3,18 @@ from newton_mcp import server as server_module
 
 async def test_lists_exactly_the_documented_tools(server):
     names = {t.name for t in await server.list_tools()}
-    assert names == {"newton_query", "newton_embed_timeseries"}
+    assert names == {"newton_query", "newton_embed_timeseries", "newton_analyze_image"}
 
 
 async def test_tools_are_marked_read_only(server):
     for t in await server.list_tools():
         assert t.annotations and t.annotations.read_only_hint is True
+
+
+async def test_analyze_image_schema_has_no_upload_property(server):
+    tools = {t.name: t for t in await server.list_tools()}
+    schema = tools["newton_analyze_image"].input_schema
+    assert "upload" not in schema.get("properties", {})
 
 
 def test_main_dispatches_stdio_by_default(monkeypatch):

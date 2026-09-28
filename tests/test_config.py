@@ -118,3 +118,33 @@ def test_port_error_names_the_supplying_variable():
 def test_prefixed_port_error_wins_over_valid_bare():
     with pytest.raises(ValueError, match=r"^NEWTON_MCP_PORT"):
         Settings.from_env({"NEWTON_MCP_PORT": "nope", "PORT": "8000"})
+
+
+def test_max_image_bytes_default():
+    s = Settings.from_env({})
+    assert s.max_image_bytes == 8 * 1024 * 1024
+
+
+def test_max_image_bytes_override():
+    s = Settings.from_env({"NEWTON_MAX_IMAGE_BYTES": "1024"})
+    assert s.max_image_bytes == 1024
+
+
+def test_max_image_bytes_non_integer_raises():
+    with pytest.raises(ValueError, match="NEWTON_MAX_IMAGE_BYTES"):
+        Settings.from_env({"NEWTON_MAX_IMAGE_BYTES": "abc"})
+
+
+def test_max_image_bytes_zero_raises():
+    with pytest.raises(ValueError, match="NEWTON_MAX_IMAGE_BYTES"):
+        Settings.from_env({"NEWTON_MAX_IMAGE_BYTES": "0"})
+
+
+def test_max_image_bytes_negative_raises():
+    with pytest.raises(ValueError, match="NEWTON_MAX_IMAGE_BYTES"):
+        Settings.from_env({"NEWTON_MAX_IMAGE_BYTES": "-1"})
+
+
+def test_max_image_bytes_above_512_mib_raises():
+    with pytest.raises(ValueError, match="NEWTON_MAX_IMAGE_BYTES"):
+        Settings.from_env({"NEWTON_MAX_IMAGE_BYTES": str(512 * 1024 * 1024 + 1)})

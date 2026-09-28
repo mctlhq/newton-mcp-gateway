@@ -10,7 +10,7 @@ from typing import Any
 
 import httpx
 
-from newton_mcp.newton.models import NewtonQueryRequest, NewtonQueryResult
+from newton_mcp.newton.models import ImageUpload, NewtonQueryRequest, NewtonQueryResult, UploadedFile
 
 
 class NewtonApiError(RuntimeError):
@@ -26,8 +26,13 @@ class ArchetypeNewtonBackend:
     def __init__(self, api_key: str, endpoint: str, timeout_sec: float = 90.0,
                  client: httpx.AsyncClient | None = None) -> None:
         self._endpoint = endpoint.rstrip("/")
+        # No client-level Content-Type: httpx applies the header generated from
+        # files= with setdefault, so a client-level Content-Type: application/json
+        # would win over the multipart boundary a files= upload_image() request
+        # needs. query() is unaffected -- it sends json= per request, which sets
+        # its own application/json header regardless.
         self._client = client or httpx.AsyncClient(
-            headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+            headers={"Authorization": f"Bearer {api_key}"},
             timeout=timeout_sec,
         )
 
@@ -50,6 +55,26 @@ class ArchetypeNewtonBackend:
             error=body.get("error_msg"),
             raw=body,
         )
+
+    async def upload_image(self, image: ImageUpload) -> UploadedFile:
+        """POST {endpoint}/files, multipart/form-data, part name ``file``.
+
+        Reference: docs.archetypeai.app/api-reference/files/upload. Backend
+        capability only -- no MCP tool calls this yet.
+        """
+        resp = await self._client.post(
+            f"{self._endpoint}/files",
+            files={"file": (image.filename, image.data, image.mime_type)},
+        )
+        body = self._json(resp)
+        if resp.status_code != 200:
+            raise NewtonApiError(resp.status_code, body.get("errors", body))
+        if not body.get("is_valid"):
+            raise NewtonApiError(resp.status_code, body.get("errors", body))
+        file_id = body.get("file_id")
+        if not file_id:
+            raise NewtonApiError(resp.status_code, body.get("errors", body))
+        return UploadedFile(backend="api", file_id=str(file_id), file_uid=body.get("file_uid"))
 
     async def aclose(self) -> None:
         await self._client.aclose()

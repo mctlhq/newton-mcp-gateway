@@ -19,6 +19,14 @@ EventType = Literal[
     "data.numeric_array",
 ]
 
+# image/png, image/jpeg -> file extension used when minting a Files API filename.
+# Reference: docs.archetypeai.app/api-reference/files/upload
+IMAGE_MIME_EXTENSIONS: dict[str, str] = {"image/png": ".png", "image/jpeg": ".jpg"}
+
+# Extensions /query recognizes as an image file_id (case-insensitive match at the
+# call site). Reference: docs.archetypeai.app/api-reference/query
+IMAGE_FILE_EXTENSIONS: tuple[str, ...] = (".png", ".jpg", ".jpeg")
+
 
 class DataEvent(BaseModel):
     """Inline data event passed in place of a file upload.
@@ -38,6 +46,12 @@ class DataEvent(BaseModel):
     @classmethod
     def numeric_array(cls, contents: list[list[float]]) -> "DataEvent":
         return cls(type="data.numeric_array", event_data={"contents": contents})
+
+    @classmethod
+    def base64_img(cls, b64: str) -> "DataEvent":
+        """One inline image, per the Data Events page's documented ``data.base64_img``
+        shape: ``event_data.contents`` is the base64-encoded image as a byte string."""
+        return cls(type="data.base64_img", event_data={"contents": b64})
 
 
 class NewtonQueryRequest(BaseModel):
@@ -70,3 +84,31 @@ class NewtonQueryResult(BaseModel):
     inference_time_sec: float | None = None
     error: str | None = None
     raw: dict[str, Any] | None = None
+
+
+class ImageUpload(BaseModel):
+    """Input to the documented ``POST /v0.5/files`` multipart upload.
+
+    Not reachable from any MCP tool in this repo yet -- a backend capability
+    only. Reference: docs.archetypeai.app/api-reference/files/upload
+    """
+
+    data: bytes
+    mime_type: Literal["image/png", "image/jpeg"]
+
+    @property
+    def filename(self) -> str:
+        return f"image{IMAGE_MIME_EXTENSIONS[self.mime_type]}"
+
+
+class UploadedFile(BaseModel):
+    """Normalized response from the Files API upload.
+
+    ``file_id`` is the extension-bearing name to pass back into ``file_ids``
+    on ``/query``; ``file_uid`` is kept only as data (the API rejects it in
+    place of ``file_id``).
+    """
+
+    backend: Literal["mock", "api"]
+    file_id: str
+    file_uid: str | None = None

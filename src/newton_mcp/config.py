@@ -27,6 +27,10 @@ DEFAULT_OMEGA_MODEL = "OmegaEncoder::omega_embeddings_01"
 HOST_VARS = ("NEWTON_MCP_HOST", "HOST")
 PORT_VARS = ("NEWTON_MCP_PORT", "PORT")
 
+DEFAULT_MAX_IMAGE_BYTES = 8 * 1024 * 1024  # 8 MiB; transport-shaped, not a documented API limit.
+# The documented ceiling for POST /v0.5/files itself (docs.archetypeai.app/api-reference/files/upload).
+DOCUMENTED_MAX_UPLOAD_BYTES = 512 * 1024 * 1024
+
 
 def _resolve(env: dict[str, str], names: tuple[str, ...], default: str) -> tuple[str, str]:
     """Return (source_variable_name, stripped_value) for the first non-blank candidate.
@@ -54,6 +58,7 @@ class Settings:
     transport: Transport = "stdio"
     host: str = "127.0.0.1"
     port: int = 8000
+    max_image_bytes: int = DEFAULT_MAX_IMAGE_BYTES
 
     @classmethod
     def from_env(cls, env: dict[str, str] | None = None) -> "Settings":
@@ -77,6 +82,20 @@ class Settings:
             raise ValueError(f"{port_var} must be an integer, got {port_raw!r}") from None
         if not 1 <= port <= 65535:
             raise ValueError(f"{port_var} must be in 1-65535, got {port}")
+        max_image_bytes_raw = env.get("NEWTON_MAX_IMAGE_BYTES", str(DEFAULT_MAX_IMAGE_BYTES))
+        try:
+            max_image_bytes = int(max_image_bytes_raw)
+        except ValueError:
+            raise ValueError(
+                f"NEWTON_MAX_IMAGE_BYTES must be an integer, got {max_image_bytes_raw!r}"
+            ) from None
+        if max_image_bytes <= 0:
+            raise ValueError(f"NEWTON_MAX_IMAGE_BYTES must be > 0, got {max_image_bytes}")
+        if max_image_bytes > DOCUMENTED_MAX_UPLOAD_BYTES:
+            raise ValueError(
+                f"NEWTON_MAX_IMAGE_BYTES must be <= {DOCUMENTED_MAX_UPLOAD_BYTES} "
+                f"(512 MiB, the documented Files API limit), got {max_image_bytes}"
+            )
         return cls(
             backend=backend,  # type: ignore[arg-type]
             api_key=api_key,
@@ -87,4 +106,5 @@ class Settings:
             transport=transport,  # type: ignore[arg-type]
             host=host,
             port=port,
+            max_image_bytes=max_image_bytes,
         )

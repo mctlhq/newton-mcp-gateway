@@ -97,9 +97,10 @@ Deliberately few. Each maps to a documented Direct Query pattern.
 |---|---|---|
 | `newton_query` | Newton C (text / image / video reasoning) | Natural-language question grounded in inline text/JSON events or uploaded `file_ids`. Use `system_prompt` to force structured JSON. |
 | `newton_embed_timeseries` | Omega encoder | Channel-first sensor window → one 768-dim embedding per channel. |
+| `newton_analyze_image` | Newton C (image reasoning) | Ask a question about one image: inline `image_base64`/`mime_type` (sent as a `data.base64_img` event) or an existing `file_id`. Stateless — never uploads or stores anything. See `docs/newton-api-notes.md` for the documented fields this tool sends. |
 
-Planned (see issues): image analysis via the Files API, running Newton Agent bundles
-(`osm`, `anomaly-discovery`, `rare-event-detection`, `task-verification`) and paging their results.
+Planned (see issues): running Newton Agent bundles (`osm`, `anomaly-discovery`,
+`rare-event-detection`, `task-verification`) and paging their results.
 
 Mock results are labelled `backend: "mock"` and text outputs start with `[mock]`. They are never
 presented as real Newton output.
