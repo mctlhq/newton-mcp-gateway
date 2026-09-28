@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Annotated, Any, Literal
 
 import yaml
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 RUNTIME_CONFIG_ENV_VAR = "NEWTON_MCP_RUNTIME_CONFIG"
 
@@ -67,6 +67,23 @@ class CapabilityConfig(BaseModel):
     arguments: dict[str, Any] = Field(default_factory=dict)
     read_tool: str | None = None
     idempotent: bool = False
+
+    @field_validator("goal_prefixes")
+    @classmethod
+    def _reject_blank_goal_prefixes(cls, value: tuple[str, ...]) -> tuple[str, ...]:
+        """An empty or whitespace-only prefix matches every goal via `str.startswith`.
+
+        `goal_prefixes: [""]` would silently widen a capability to match any
+        contract goal, which contradicts the fail-loudly philosophy described
+        in this module's docstring. Reject it at load time instead.
+        """
+        for prefix in value:
+            if not prefix.strip():
+                raise ValueError(
+                    f"goal_prefixes entries must not be empty or blank, got {prefix!r}; "
+                    "an empty prefix matches every goal via str.startswith('')"
+                )
+        return value
 
 
 class RuntimeConfig(BaseModel):

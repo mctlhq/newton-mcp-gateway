@@ -135,6 +135,23 @@ def test_duplicate_server_tool_pair_rejected() -> None:
         RuntimeConfig.model_validate(data)
 
 
+@pytest.mark.parametrize("blank_prefix", ["", "   ", "\t"])
+def test_blank_goal_prefix_rejected(blank_prefix: str) -> None:
+    data = {
+        "servers": [{"name": "hvac", "transport": {"kind": "stdio", "command": "a"}}],
+        "capabilities": [
+            {
+                "server": "hvac",
+                "tool": "set_target_temperature",
+                "goal_prefixes": ["reduce_room_temperature", blank_prefix],
+                "target": {"type": "environment"},
+            }
+        ],
+    }
+    with pytest.raises(ValidationError, match="goal_prefixes"):
+        RuntimeConfig.model_validate(data)
+
+
 def test_load_runtime_config_env_var_unset(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv(RUNTIME_CONFIG_ENV_VAR, raising=False)
     with pytest.raises(ValueError, match=RUNTIME_CONFIG_ENV_VAR):
