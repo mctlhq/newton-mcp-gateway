@@ -153,6 +153,12 @@ The first real actuator testbed is a smart-home MCP server (lights, HVAC, speake
 is real hardware with benign, reversible actions. The interface itself is domain-independent:
 Home Assistant, BMS, OPC-UA, ROS or enterprise workflow MCP servers plug in the same way.
 
+`src/newton_mcp/runtime/` implements the first box of that pipeline: the gateway process also
+becomes an MCP **host/client**. Given a reviewable `runtime.yaml` allow-list, it discovers tools
+on the configured MCP servers (`list_tools` only, never `call_tool`) and deterministically
+resolves a `PhysicalActionContract` into ranked, explainable candidate tool calls. It executes
+nothing -- no policy, no approval, no lifecycle, no audit. See `docs/action-runtime.md`.
+
 ## What is confirmed vs. proposed
 
 | | Source |

@@ -1,0 +1,56 @@
+# Example runtime.yaml -- a reviewable allow-list of MCP server + tool capabilities.
+#
+# Safe demo capabilities only, per the epic's hard rule: no lock, oven, alarm,
+# industrial start/stop or safety-system tool belongs in this file, ever. See
+# docs/action-runtime.md for the full shape and the filter chain this feeds.
+#
+# This is discovery + resolution only. Nothing here executes a tool.
+
+servers:
+  # A local HVAC controller, launched as a subprocess and spoken to over stdio.
+  - name: hvac-controller
+    transport:
+      kind: stdio
+      command: hvac-mcp-server
+      args: ["--config", "/etc/hvac-mcp-server/config.yaml"]
+
+  # A lighting/speaker bridge, reached over the network.
+  - name: home-bridge
+    transport:
+      kind: streamable-http
+      url: https://home-bridge.local/mcp
+
+capabilities:
+  - server: hvac-controller
+    tool: set_target_temperature
+    goal_prefixes: ["reduce_room_temperature", "raise_room_temperature"]
+    target:
+      type: environment
+      locations: ["kitchen", "living_room"]
+    arguments:
+      location: "${target.location}"
+      target_temperature_c: "${constraints.desired_temperature_c}"
+    read_tool: get_room_temperature
+    idempotent: true
+
+  - server: home-bridge
+    tool: set_light_state
+    goal_prefixes: ["turn_on_light", "turn_off_light"]
+    target:
+      type: environment
+      locations: ["kitchen", "living_room", "hallway"]
+    arguments:
+      location: "${target.location}"
+      "on": "${constraints.desired_on}"
+    read_tool: get_light_state
+    idempotent: true
+
+  - server: home-bridge
+    tool: announce
+    goal_prefixes: ["announce"]
+    target:
+      type: environment
+      locations: []
+    arguments:
+      message: "${reason}"
+    idempotent: false
