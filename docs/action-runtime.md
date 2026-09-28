@@ -1,11 +1,13 @@
-# Action runtime: MCP host, tool discovery, policy and context-bound approval
+# Action runtime: MCP host, tool discovery, policy, approval, lifecycle and audit
 
 > This document describes `src/newton_mcp/runtime/` and `src/newton_mcp/action/policy.py` /
 > `src/newton_mcp/action/approval.py`, **this project's experimental proposal** for Direction A
 > (MCP as Newton's action boundary). It is not an Archetype standard, and nothing described here
 > has been run against a live Newton account or a live MCP actuator server. This package
-> discovers tools, resolves candidates, decides auto/confirm/deny and can bind an approval to one
-> exact action -- it still executes nothing: no `call_tool`, no lifecycle, no audit, no LLM.
+> discovers tools, resolves candidates, decides auto/confirm/deny, can bind an approval to one
+> exact action, and tracks that action through an explicit lifecycle with an append-only audit
+> trail -- it still executes nothing: no `call_tool`, no timeout policy, no verification logic,
+> no LLM.
 
 ## Why this exists
 
@@ -234,10 +236,88 @@ still-future timestamp, because `expires_at` is itself part of the payload the b
 naive `now` raises rather than silently comparing. A failure's reason names the failing field but
 never echoes an `args` value.
 
+## Lifecycle, correlation ids and audit
+
+`src/newton_mcp/runtime/lifecycle.py` defines `ActionState`, an explicit ten-member state
+machine, and `transition()`, the single guarded mutation point. The allowed edges live in one
+module-level, read-only mapping, `ALLOWED_TRANSITIONS` -- the safety argument is that table, not
+control flow:
+
+```
+PROPOSED   -> AUTHORIZED | DENIED
+AUTHORIZED -> EXECUTING
+EXECUTING  -> EXECUTED | UNKNOWN
+EXECUTED   -> VERIFYING
+UNKNOWN    -> VERIFYING | ESCALATED
+VERIFYING  -> SUCCEEDED | FAILED | ESCALATED
+FAILED     -> EXECUTING (retry, requires verified_failure=True) | ESCALATED
+DENIED, SUCCEEDED, ESCALATED -> (terminal, no outgoing edge)
+```
+
+Two edges are absent on purpose, and each absence is the point of the issue this module answers:
+
+- **`UNKNOWN -> EXECUTING` does not exist.** `UNKNOWN` means the runtime does not know whether a
+  physical action happened (a tool-call timeout or transport failure, never a synchronous error
+  response -- see below). Re-issuing a non-idempotent physical action while its outcome is
+  unknown is exactly the failure mode this module exists to prevent, so an unknown outcome must
+  be verified or escalated, never blindly retried.
+- **`PROPOSED -> EXECUTING` does not exist.** Execution always requires passing through
+  `AUTHORIZED` first.
+
+A synchronous MCP error response is still a *completed call attempt* -- it does not prove the
+physical action did not (partly) happen -- so it goes `EXECUTING -> EXECUTED -> VERIFYING` like
+any other completed call; there is no `EXECUTING -> FAILED` edge. `FAILED` is reachable only from
+`VERIFYING`, so a `FAILED` record always means a *verified* failure, and a `FAILED -> EXECUTING`
+retry additionally requires an explicit `verified_failure=True` keyword (never inferred from the
+free-text `reason` string).
+
+`ActionRecord` is frozen and carries the four correlation ids named above:
+`observation_id`, `action_id`, `tool_call_id`, `verification_id`. All four are populated at
+`new_action_record()` time -- generated (`obs-`/`act-`/`call-`/`ver-` plus 16 hex characters,
+via an injectable `id_factory`) for any the caller omits, so every audit line ever written for a
+record carries four non-null ids. `observation_id`/`action_id` are fixed for the whole action;
+`tool_call_id`/`verification_id` are **attempt-scoped**: the creation-time pair is attempt 1's,
+unchanged through `AUTHORIZED -> EXECUTING` and any entry into `VERIFYING`, and only a retry
+`FAILED -> EXECUTING` replaces both together (attempt increments to 2), so a call and its
+verification never end up belonging to different attempts.
+
+`transition()` never mutates the record it is given -- it returns a new one, and a rejected
+transition (`IllegalTransition`) leaves the input untouched and writes no audit line.
+
+Audit: `src/newton_mcp/runtime/audit.py` defines `AuditEvent` (one accepted transition) and two
+sinks. `MemoryAuditSink` is the default -- effectively disabled, and what the test suite uses, so
+no test writes a file. `JsonlAuditSink` appends one compact JSON line per event to a file, opened
+in append mode per write, so re-opening an existing audit file never truncates it and lines
+survive a process restart; each line carries all four ids, `from`/`to`, `reason`, `attempt`,
+`verified_failure`, a canonical UTC `at` timestamp, and, when the caller supplied tool arguments,
+a redacted `args` mapping plus `args_digest` (`sha256_hex` over the **unredacted** args -- the
+same value `Approval.args_digest` already stores for the same action, so an audit line is
+provable against the approval it followed).
+
+`load_audit_sink()` reads `NEWTON_MCP_AUDIT_PATH`. Unlike `load_runtime_config()` /
+`load_policy()`, an unset or blank value returns the in-memory sink rather than failing loudly --
+an audit sink is not an authority boundary the way an allow-list is, and an operator who never set
+the variable never asked for a file. A value that *is* set but unusable (parent directory
+missing, path is a directory, not writable) still raises `ValueError` naming the variable and the
+path, so a typo is loud.
+
+Redaction (`redact_args()`) replaces the value of any argument key whose casefolded name contains
+one of a documented set of substrings (`key`, `token`, `secret`, `password`, `credential`,
+`auth`, `cookie`, `session`, ...) with a fixed `[redacted]` marker, recursing into nested mappings
+and lists, and truncates long surviving string values. This is **key-name only and deliberately
+over-eager**: a benign key like `keypad_zone` is redacted too, and there is no value-shape
+detection at all -- a secret passed under a harmless key name (e.g. `note`) still reaches the
+log. Over-redaction is the safe direction; this gap is documented rather than papered over.
+
+This module executes nothing: no `call_tool`, no MCP session, no timeout policy, no verification
+logic, and no retry *decision* (only that a retry is *possible* and what it must carry). The
+executor and verifier (a later phase) consume `transition()`; they are not part of it.
+
 ## What this package does not do
 
-- Execute tools (`call_tool`), retry, or change the physical world in any way.
-- Track an action's lifecycle, audit an approval, or verify a physical outcome.
+- Execute tools (`call_tool`), retry (the retry *decision*), or change the physical world in any
+  way.
+- Verify a physical outcome (read a `read_tool`, evaluate `verification.condition`).
 - Enforce that a caller hands `verify_approval` the `policy_version` of the policy currently
   loaded -- it only makes a mismatch detectable; wiring that coupling in is a later, executor
   issue.

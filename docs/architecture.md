@@ -44,7 +44,11 @@ Newton / Newton Agent
         └──────────────── feedback to Newton (new observation)
 ```
 
-Lifecycle: `PROPOSED → AUTHORIZED → EXECUTING → EXECUTED → VERIFYING → SUCCEEDED | FAILED | ESCALATED`.
+Lifecycle: `PROPOSED → AUTHORIZED | DENIED`, `AUTHORIZED → EXECUTING`,
+`EXECUTING → EXECUTED | UNKNOWN`, `EXECUTED → VERIFYING`, `UNKNOWN → VERIFYING | ESCALATED`,
+`VERIFYING → SUCCEEDED | FAILED | ESCALATED`, `FAILED → EXECUTING (retry) | ESCALATED`. `UNKNOWN`
+cannot return directly to `EXECUTING` -- an unobserved outcome must be verified or escalated,
+never blindly retried. See `docs/action-runtime.md`.
 
 Correlation ids to carry through every step: `observation_id`, `action_id`, `tool_call_id`,
 `verification_id`.

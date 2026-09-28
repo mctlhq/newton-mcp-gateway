@@ -11,9 +11,11 @@ from __future__ import annotations
 from collections.abc import AsyncIterator, Callable, Iterable
 from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from typing import Any
 
 import anyio
+import pytest
 from mcp import Client
 from mcp.server.mcpserver import MCPServer
 from mcp.types import ToolAnnotations
@@ -170,3 +172,24 @@ def task_group_raising_factory(message: str) -> ClientFactory:
 
 async def _empty() -> ListToolsResult:
     return ListToolsResult(tools=[])
+
+
+@pytest.fixture
+def deterministic_id_factory() -> Callable[[], str]:
+    """A counter-based id_factory yielding `0000000000000001`, `0000000000000002`, ...
+
+    16 hex characters, matching the default `secrets.token_hex(8)` shape, so
+    assertions on generated ids (`obs-0000000000000001`, ...) can be literals.
+    """
+    counter = iter(range(1, 1_000_000))
+
+    def factory() -> str:
+        return f"{next(counter):016x}"
+
+    return factory
+
+
+@pytest.fixture
+def fixed_now() -> datetime:
+    """A fixed, aware UTC `datetime` for lifecycle/audit assertions."""
+    return datetime(2026, 1, 1, 12, 0, 0, tzinfo=timezone.utc)
