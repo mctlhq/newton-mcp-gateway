@@ -153,6 +153,45 @@ def test_args_digest_matches_approval_args_digest(tmp_path: Path, fixed_now: dat
     assert event.args_digest == approval.args_digest
 
 
+def test_args_digest_is_over_unredacted_args_when_a_secret_key_is_present(fixed_now: datetime) -> None:
+    """With a secret-looking key in `args`, the audit digest still equals the Approval digest.
+
+    Guards against hashing the redacted copy: with benign-only args redaction is a no-op,
+    so only args that redaction actually changes can tell the two digests apart.
+    """
+    args = {"location": "kitchen", "api_key": "sk-abc123", "nested": {"access_token": "tok-xyz"}}
+    sink = MemoryAuditSink()
+    record = new_action_record(now=fixed_now)
+    transition(record, ActionState.AUTHORIZED, "approved", now=fixed_now, sink=sink, args=args)
+    event = sink.events[0]
+
+    assert event.args is not None
+    assert event.args["api_key"] == REDACTED
+    assert event.args["nested"]["access_token"] == REDACTED
+    assert sha256_hex(redact_args(args)) != sha256_hex(args)
+    assert event.args_digest == sha256_hex(args)
+
+    from dataclasses import dataclass
+
+    @dataclass
+    class FakeCandidate:
+        server_binding_identity: str
+        tool_name: str
+        args: dict
+
+    candidate = FakeCandidate(server_binding_identity="server@sha256:abc", tool_name="set_target_temperature", args=args)
+    approval = create_approval(
+        candidate,
+        action_id="action-1",
+        policy_version="v1",
+        approved_by="operator",
+        approved_at=fixed_now,
+        expires_at=fixed_now,
+        approval_id="approval-1",
+    )
+    assert event.args_digest == approval.args_digest
+
+
 # ---------------------------------------------------------------------------
 # T17: long string values are truncated; JSON stays single-line
 # ---------------------------------------------------------------------------

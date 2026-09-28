@@ -141,6 +141,47 @@ def test_rejected_transition_leaves_record_unchanged_and_writes_nothing(fixed_no
     assert sink.events == []
 
 
+def test_rejected_transition_mints_no_ids(fixed_now: datetime) -> None:
+    """A rejected transition must not consume `id_factory` -- ids are minted only after every check passes."""
+    calls: list[int] = []
+
+    def counting_factory() -> str:
+        calls.append(1)
+        return f"{len(calls):016x}"
+
+    failed = _record(ActionState.FAILED, attempt=1, fixed_now=fixed_now)
+    proposed = _record(ActionState.PROPOSED, fixed_now=fixed_now)
+    rejected_calls = [
+        # illegal edge
+        lambda: transition(proposed, ActionState.EXECUTING, "nope", now=fixed_now, id_factory=counting_factory),
+        # retry without a verified failure
+        lambda: transition(failed, ActionState.EXECUTING, "retry", now=fixed_now, id_factory=counting_factory),
+        # retry with a forbidden correlation-root id
+        lambda: transition(
+            failed,
+            ActionState.EXECUTING,
+            "retry",
+            now=fixed_now,
+            verified_failure=True,
+            id_factory=counting_factory,
+            action_id="act-x",
+        ),
+        # retry with a naive `now`
+        lambda: transition(
+            failed,
+            ActionState.EXECUTING,
+            "retry",
+            now=fixed_now.replace(tzinfo=None),
+            verified_failure=True,
+            id_factory=counting_factory,
+        ),
+    ]
+    for rejected in rejected_calls:
+        with pytest.raises(ValueError):
+            rejected()
+    assert calls == []
+
+
 # ---------------------------------------------------------------------------
 # T8: id generation
 # ---------------------------------------------------------------------------
@@ -247,6 +288,49 @@ def test_attempt_scoped_ids(fixed_now: datetime, deterministic_id_factory: Calla
     assert record.verification_id != creation_verification_id
     assert record.tool_call_id != record.verification_id
     assert record.attempt == 2
+
+
+def test_audit_lines_carry_attempt_scoped_ids_as_a_pair(
+    fixed_now: datetime, deterministic_id_factory: Callable[[], str]
+) -> None:
+    """Every attempt-1 audit line carries call-1/ver-1; from the retry on, call-2/ver-2 -- never a mix."""
+    sink = MemoryAuditSink()
+    record = new_action_record(now=fixed_now, id_factory=deterministic_id_factory)
+    assert (record.tool_call_id, record.verification_id) == ("call-0000000000000003", "ver-0000000000000004")
+
+    for new_state, reason in [
+        (ActionState.AUTHORIZED, "approved"),
+        (ActionState.EXECUTING, "calling tool"),
+        (ActionState.EXECUTED, "tool responded"),
+        (ActionState.VERIFYING, "checking outcome"),
+        (ActionState.FAILED, "verified failed"),
+    ]:
+        record = transition(record, new_state, reason, now=fixed_now, sink=sink, id_factory=deterministic_id_factory)
+    record = transition(
+        record,
+        ActionState.EXECUTING,
+        "retry",
+        now=fixed_now,
+        sink=sink,
+        verified_failure=True,
+        id_factory=deterministic_id_factory,
+    )
+    record = transition(record, ActionState.EXECUTED, "tool responded", now=fixed_now, sink=sink)
+    record = transition(record, ActionState.VERIFYING, "checking outcome", now=fixed_now, sink=sink)
+
+    assert [(e.to_state, e.attempt, e.tool_call_id, e.verification_id) for e in sink.events] == [
+        ("authorized", 0, "call-0000000000000003", "ver-0000000000000004"),
+        ("executing", 1, "call-0000000000000003", "ver-0000000000000004"),
+        ("executed", 1, "call-0000000000000003", "ver-0000000000000004"),
+        ("verifying", 1, "call-0000000000000003", "ver-0000000000000004"),
+        ("failed", 1, "call-0000000000000003", "ver-0000000000000004"),
+        ("executing", 2, "call-0000000000000005", "ver-0000000000000006"),
+        ("executed", 2, "call-0000000000000005", "ver-0000000000000006"),
+        ("verifying", 2, "call-0000000000000005", "ver-0000000000000006"),
+    ]
+    assert {(e.observation_id, e.action_id) for e in sink.events} == {
+        ("obs-0000000000000001", "act-0000000000000002")
+    }
 
 
 def test_retry_supplied_id_wins_and_unsupplied_id_is_still_generated(
