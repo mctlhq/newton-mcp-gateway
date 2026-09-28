@@ -160,8 +160,12 @@ resolves a `PhysicalActionContract` into ranked, explainable candidate tool call
 `src/newton_mcp/action/policy.py` then decides auto/confirm/deny against a reviewable
 `policy.yaml`, and `src/newton_mcp/action/approval.py` can bind an `Approval` to one exact
 resolved action (server, tool, args, action id, policy version and expiry) via a sha256 binding
-that a re-pointed server or a changed argument invalidates. It executes nothing -- no execution,
-no lifecycle, no audit. See `docs/action-runtime.md`.
+that a re-pointed server or a changed argument invalidates. `src/newton_mcp/runtime/lifecycle.py`
+tracks an approved action through an explicit `ActionState` machine (including an `UNKNOWN` state
+for a tool-call timeout, which can never go straight back to `EXECUTING`) with four correlation
+ids, and `src/newton_mcp/runtime/audit.py` writes one append-only, redacted JSONL line per
+accepted transition. It executes nothing -- no execution, no verification. See
+`docs/action-runtime.md`.
 
 ## What is confirmed vs. proposed
 
