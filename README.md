@@ -73,7 +73,7 @@ instead — for a host that is not a local Claude Desktop process on the same ma
 `NEWTON_MCP_TRANSPORT=streamable-http`:
 
 ```bash
-NEWTON_BACKEND=mock NEWTON_MCP_TRANSPORT=streamable-http PORT=8000 uv run newton-mcp
+NEWTON_BACKEND=mock NEWTON_MCP_TRANSPORT=streamable-http NEWTON_MCP_PORT=8000 uv run newton-mcp
 # -> http://127.0.0.1:8000/mcp
 ```
 

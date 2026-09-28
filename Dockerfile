@@ -26,6 +26,11 @@ WORKDIR /app
 COPY --from=builder /app/.venv /app/.venv
 RUN chmod -R go-w /app
 
+# HOST/PORT below are bare compatibility defaults, not NEWTON_MCP_HOST/NEWTON_MCP_PORT:
+# the prefixed names out-rank bare ones, so setting them here would make every
+# operator `docker run -e HOST=... / -e PORT=...` override a silent no-op. Override
+# with `-e HOST=...` / `-e PORT=...` (as before) or `-e NEWTON_MCP_HOST=...` /
+# `-e NEWTON_MCP_PORT=...` (preferred, wins over both).
 ENV PATH="/app/.venv/bin:$PATH" \
     PYTHONUNBUFFERED=1 \
     NEWTON_BACKEND=mock \

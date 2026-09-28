@@ -1,7 +1,14 @@
 """Runtime configuration, read from environment variables.
 
-Variable names for the real backend follow Archetype's official conventions
-(ATAI_API_KEY, ATAI_API_ENDPOINT). Everything else is project-specific.
+Project-owned variables are namespaced `NEWTON_*` (e.g. `NEWTON_BACKEND`,
+`NEWTON_MCP_TRANSPORT`, `NEWTON_MCP_HOST`, `NEWTON_MCP_PORT`). The bind
+address prefers `NEWTON_MCP_HOST` / `NEWTON_MCP_PORT`, with the bare `HOST` /
+`PORT` retained as a lower-precedence fallback so existing deployments keep
+working; `HOST` in particular collides with a shell-reserved parameter, which
+is why the prefixed name is preferred. Variable names for the real backend
+follow Archetype's official conventions (ATAI_API_KEY, ATAI_API_ENDPOINT) and
+stay unprefixed because Archetype's docs define them. Everything else is
+project-specific.
 """
 
 from __future__ import annotations
@@ -16,6 +23,24 @@ Transport = Literal["stdio", "streamable-http"]
 DEFAULT_ENDPOINT = "https://api.u1.archetypeai.app/v0.5"
 DEFAULT_TEXT_MODEL = "Newton::c2_5_8b_260413b723a9ab"
 DEFAULT_OMEGA_MODEL = "OmegaEncoder::omega_embeddings_01"
+
+HOST_VARS = ("NEWTON_MCP_HOST", "HOST")
+PORT_VARS = ("NEWTON_MCP_PORT", "PORT")
+
+
+def _resolve(env: dict[str, str], names: tuple[str, ...], default: str) -> tuple[str, str]:
+    """Return (source_variable_name, stripped_value) for the first non-blank candidate.
+
+    Blank and whitespace-only values are treated as "not supplied" so a blank
+    prefixed variable falls through to the bare fallback and then to the default.
+    When nothing is supplied, the first (preferred) name is reported as the source
+    so that any downstream message names the variable an operator should set.
+    """
+    for name in names:
+        raw = env.get(name)
+        if raw is not None and raw.strip():
+            return name, raw.strip()
+    return names[0], default
 
 
 @dataclass(frozen=True)
@@ -44,14 +69,14 @@ class Settings:
             raise ValueError(
                 f"NEWTON_MCP_TRANSPORT must be 'stdio' or 'streamable-http', got {transport!r}"
             )
-        host = env.get("HOST", "127.0.0.1").strip() or "127.0.0.1"
-        port_raw = env.get("PORT", "8000").strip()
+        _, host = _resolve(env, HOST_VARS, "127.0.0.1")
+        port_var, port_raw = _resolve(env, PORT_VARS, "8000")
         try:
             port = int(port_raw)
         except ValueError:
-            raise ValueError(f"PORT must be an integer, got {port_raw!r}") from None
+            raise ValueError(f"{port_var} must be an integer, got {port_raw!r}") from None
         if not 1 <= port <= 65535:
-            raise ValueError(f"PORT must be in 1-65535, got {port}")
+            raise ValueError(f"{port_var} must be in 1-65535, got {port}")
         return cls(
             backend=backend,  # type: ignore[arg-type]
             api_key=api_key,
