@@ -15,7 +15,7 @@ RUN uv sync --locked --no-dev --no-install-project
 
 # Now install the project itself.
 COPY src/ src/
-RUN uv sync --locked --no-dev
+RUN uv sync --locked --no-dev --no-editable
 
 FROM python:3.12-slim AS runtime
 
