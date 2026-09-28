@@ -1,0 +1,49 @@
+name: Claude PR review
+
+on:
+  pull_request:
+    types: [opened, reopened, synchronize, ready_for_review]
+  issue_comment:
+    types: [created]
+
+permissions: {}
+
+jobs:
+  claude-review:
+    uses: mctlhq/.github/.github/workflows/claude-review.yml@4c18b2d5aa517ab3c6c4bf151de4a710f8121d47
+    permissions:
+      contents: read
+      pull-requests: write
+      issues: write
+      id-token: write
+      # Private repository: claude-code-action reads its own workflow run for the
+      # job link, which answers 403 here without this scope (see projects-mcp #1).
+      actions: read
+    with:
+      allowed-bots: "mctl-claude-remote,github-actions,dependabot,mctl-agents"
+      model-high: claude-sonnet-5
+      conventions: |
+        This is an experimental MCP gateway for Archetype AI Newton plus a
+        closed-loop physical action runtime proposal. Review against AGENTS.md:
+        - Only publicly documented Archetype behaviour (docs.archetypeai.app).
+          An endpoint, parameter or model id not in the public docs is a finding.
+        - Mock output must stay labelled (`backend: "mock"`, `[mock]` prefix).
+          No claim that the live Newton integration works before it was run
+          with real credentials ("mock-validated" until then).
+        - The Physical Action Contract and action runtime are this project's
+          proposal, never Archetype's; wording that blurs this is a finding.
+        - Small explicit code, Pydantic v2, type hints, a test for every
+          behaviour. No Temporal, Kubernetes, DB, auth platform or UI unless the
+          issue asks. The repo never pitches or depends on mctl.ai.
+        - `schemas/physical-action-contract.schema.json` must be regenerated
+          whenever `PhysicalActionContract` changes.
+        - Physical actions: a successful tool call is not a successful physical
+          outcome. A timeout is UNKNOWN, never success, and must not trigger a
+          blind retry of a non-idempotent action. Demo actions stay benign
+          (lights, HVAC within bounds, speaker); never locks, ovens, alarms,
+          industrial start/stop or safety systems.
+        - Fixtures from real API responses are minimal and sanitized: no keys,
+          ids, URLs or full raw payloads — the repo will become public.
+    secrets:
+      CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+      CLAUDE_CODE_OAUTH_TOKEN_2: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN_2 }}
