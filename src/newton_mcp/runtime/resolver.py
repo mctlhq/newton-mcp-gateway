@@ -49,6 +49,7 @@ class CandidateAction(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     server_identity: str
+    server_binding_identity: str
     tool_name: str
     args: dict[str, Any]
     read_tool: str | None
@@ -286,6 +287,7 @@ class Resolver:
 
         return CandidateAction(
             server_identity=server_identity,
+            server_binding_identity=entry.server.binding_identity,
             tool_name=tool_name,
             args=args,
             read_tool=capability.read_tool,

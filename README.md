@@ -156,8 +156,12 @@ Home Assistant, BMS, OPC-UA, ROS or enterprise workflow MCP servers plug in the 
 `src/newton_mcp/runtime/` implements the first box of that pipeline: the gateway process also
 becomes an MCP **host/client**. Given a reviewable `runtime.yaml` allow-list, it discovers tools
 on the configured MCP servers (`list_tools` only, never `call_tool`) and deterministically
-resolves a `PhysicalActionContract` into ranked, explainable candidate tool calls. It executes
-nothing -- no policy, no approval, no lifecycle, no audit. See `docs/action-runtime.md`.
+resolves a `PhysicalActionContract` into ranked, explainable candidate tool calls.
+`src/newton_mcp/action/policy.py` then decides auto/confirm/deny against a reviewable
+`policy.yaml`, and `src/newton_mcp/action/approval.py` can bind an `Approval` to one exact
+resolved action (server, tool, args, action id, policy version and expiry) via a sha256 binding
+that a re-pointed server or a changed argument invalidates. It executes nothing -- no execution,
+no lifecycle, no audit. See `docs/action-runtime.md`.
 
 ## What is confirmed vs. proposed
 

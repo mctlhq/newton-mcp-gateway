@@ -10,11 +10,60 @@ from __future__ import annotations
 import os
 from pathlib import Path
 from typing import Annotated, Any, Literal
+from urllib.parse import urlsplit, urlunsplit
 
 import yaml
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from newton_mcp.canonical import sha256_hex
+
 RUNTIME_CONFIG_ENV_VAR = "NEWTON_MCP_RUNTIME_CONFIG"
+
+_DEFAULT_PORT_FOR_SCHEME = {"http": 80, "https": 443}
+
+
+def _canonical_url(url: str) -> str:
+    """Lowercase the scheme and the host-name part of `url`; elide a default port.
+
+    Userinfo (`user:pass@`), IPv6 brackets, path, query and fragment are kept
+    byte-exact. The netloc is rebuilt from its own substrings -- never from
+    `urlsplit(...).hostname`/`.port` -- because those properties silently drop
+    userinfo and IPv6 brackets, which would make two URLs that differ only in
+    credentials fingerprint the same. Nothing else is normalised: two URLs
+    that differ only in percent-encoding or a trailing slash fingerprint
+    differently, which fails safe (a spurious invalidation, never a spurious
+    validity).
+    """
+    parsed = urlsplit(url)
+    scheme = parsed.scheme.lower()
+    netloc = parsed.netloc
+
+    userinfo = ""
+    hostport = netloc
+    if "@" in netloc:
+        userinfo, hostport = netloc.rsplit("@", 1)
+        userinfo += "@"
+
+    port: str | None
+    if hostport.startswith("["):
+        end = hostport.index("]")
+        host = hostport[: end + 1].lower()
+        rest = hostport[end + 1 :]
+        port = rest[1:] if rest.startswith(":") else None
+    elif ":" in hostport:
+        host, _, port = hostport.rpartition(":")
+        host = host.lower()
+    else:
+        host = hostport.lower()
+        port = None
+
+    default_port = _DEFAULT_PORT_FOR_SCHEME.get(scheme)
+    port_suffix = ""
+    if port and (default_port is None or port != str(default_port)):
+        port_suffix = f":{port}"
+
+    canonical_netloc = f"{userinfo}{host}{port_suffix}"
+    return urlunsplit((scheme, canonical_netloc, parsed.path, parsed.query, parsed.fragment))
 
 
 class StdioTransport(BaseModel):
@@ -47,6 +96,47 @@ class ServerConfig(BaseModel):
     def resolved_identity(self) -> str:
         """The identity `CandidateAction.server_identity` names; defaults to `name`."""
         return self.identity if self.identity is not None else self.name
+
+    @property
+    def transport_fingerprint(self) -> str:
+        """sha256 of the canonical transport form; see docs/action-runtime.md.
+
+        For `streamable-http` this is `{"kind": "streamable-http", "url":
+        <canonical url>}`. For `stdio` it is `{"kind": "stdio", "command":
+        ..., "args": [...], "env": {...}}` with the full `env` mapping --
+        names and values. An env *value* enters only this digest: it never
+        appears in `binding_identity`, an `Approval`, a reason string or a
+        log. Changing `url` (http), or `command`/`args`/any `env` name or
+        value (stdio), changes this fingerprint -- a stdio server's target is
+        often configured through env, so a credential rotation also
+        invalidates outstanding approvals, which fails safe for short-lived
+        approvals.
+        """
+        transport = self.transport
+        canonical: dict[str, Any]
+        if isinstance(transport, HttpTransport):
+            canonical = {"kind": "streamable-http", "url": _canonical_url(transport.url)}
+        elif isinstance(transport, StdioTransport):
+            canonical = {
+                "kind": "stdio",
+                "command": transport.command,
+                "args": list(transport.args),
+                "env": dict(transport.env),
+            }
+        else:  # pragma: no cover - the discriminated union covers every case
+            raise ValueError(f"unsupported transport {transport!r}")
+        return sha256_hex(canonical)
+
+    @property
+    def binding_identity(self) -> str:
+        """The configured label plus a canonical transport fingerprint.
+
+        This, not `resolved_identity` alone, is what an `Approval`'s
+        `server_identity` binds to: a label-only binding would leave every
+        outstanding approval valid after an operator re-points this server's
+        transport to somewhere else under the same name.
+        """
+        return f"{self.resolved_identity}@sha256:{self.transport_fingerprint}"
 
 
 class TargetMatch(BaseModel):
