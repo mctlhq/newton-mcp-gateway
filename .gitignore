@@ -4,3 +4,4 @@ __pycache__/
 .env
 dist/
 .pytest_cache/
+examples/smart-home/demo-audit.jsonl

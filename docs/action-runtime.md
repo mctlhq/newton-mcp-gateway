@@ -476,3 +476,8 @@ resolver -> policy -> approval -> executor -> verifier), and the repository's `R
 what is confirmed Archetype behaviour versus this project's proposal. Every result described in
 this document is **mock-validated only**: no code here has run against a live actuator or live
 Newton credentials.
+
+`examples/smart-home/` composes every module described above into one runnable, mock-validated
+end-to-end demo (`propose_action` -> resolve -> policy -> approve -> execute -> verify) against an
+in-process fake smart-home actuator, with a committed `trace.jsonl` and an AC-offline failure
+path -- see `examples/smart-home/README.md`.
