@@ -11,9 +11,11 @@
 
 ## Part 1: Confirmed from Archetype's public documentation
 
-Every row below cites a concrete page under `docs.archetypeai.app/`, not the site root, and is
-restricted to an endpoint, field, event type, model family, or environment variable name this
-repository's code already relies on.
+Every row below cites a concrete page under `docs.archetypeai.app/`, not the site root. The rows
+above the Agents API rows are restricted to an endpoint, field, event type, model family, or
+environment variable name this repository's code already relies on. The three Agents API rows are
+publicly documented but **not yet integrated** into this gateway (#13); they are listed because
+Part 3's questions refer to them.
 
 | Item | Confirmed detail | Source |
 |---|---|---|
@@ -91,12 +93,13 @@ whole repository.
    to self-report one in a JSON system prompt?
 4. **Support for post-action verification.** *Assumption today:* verification is entirely this
    project's own (`src/newton_mcp/runtime/verifier.py`): it polls a capability's `read_tool` and
-   evaluates a structured condition. The Task Verification Agent (`core-concepts/agents/task-
-   verification.md`) verifies that work was performed according to a standard operating procedure
-   by observing video data; whether it is suitable for verifying a *commanded physical outcome* is
-   not confirmed by any public page this project found. *Question:* is the Task Verification Agent,
-   or another Agent, intended for that use, and could such a result be fed back into this runtime as
-   a new observation rather than this project polling a `read_tool` itself?
+   evaluates a structured condition. The Task Verification Agent
+   (`core-concepts/agents/task-verification.md`) verifies that work was performed according to a
+   standard operating procedure by observing video data; whether it is suitable for verifying a
+   *commanded physical outcome* is not confirmed by any public page this project found.
+   *Question:* is the Task Verification Agent, or another Agent, intended for that use, and could
+   such a result be fed back into this runtime as a new observation rather than this project
+   polling a `read_tool` itself?
 
 ## Closing statement
 

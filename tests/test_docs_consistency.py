@@ -79,18 +79,43 @@ _FENCE_RE = re.compile(r"```[^\n]*\n(.*?)```", re.DOTALL)
 _INLINE_RE = re.compile(r"(?<!`)`([^`\n]+)`(?!`)")
 
 
+def _has_open_quote(text: str) -> bool:
+    """True when `text` ends inside an unclosed shell quote."""
+    try:
+        shlex.split(text)
+    except ValueError as exc:
+        return "No closing quotation" in str(exc)
+    return False
+
+
 def _join_continuations(block: str) -> list[str]:
-    """Join `\\`-continued lines in a fenced code block into logical commands."""
+    """Join a fenced code block's physical lines into logical commands, as a shell would.
+
+    A line ending in `\\` continues onto the next, and so does a line that
+    leaves a quote open -- a multi-line `python -c "..."` is one command. A
+    command still unterminated at the end of the block is returned as-is, so
+    the caller's tokeniser reports it rather than it vanishing.
+    """
     logical_lines: list[str] = []
     buffer = ""
+    in_quote = False
     for raw_line in block.splitlines():
-        stripped = raw_line.strip()
-        combined = f"{buffer} {stripped}".strip() if buffer else stripped
+        if in_quote:
+            combined = f"{buffer}\n{raw_line}"
+        else:
+            stripped = raw_line.strip()
+            combined = f"{buffer} {stripped}".strip() if buffer else stripped
+            if not buffer and combined.startswith("#"):
+                continue
+        in_quote = _has_open_quote(combined)
+        if in_quote:
+            buffer = combined
+            continue
         if combined.endswith("\\"):
             buffer = combined[:-1].rstrip()
             continue
         buffer = ""
-        if combined and not combined.startswith("#"):
+        if combined:
             logical_lines.append(combined)
     if buffer:
         logical_lines.append(buffer)
@@ -192,17 +217,21 @@ def _looks_like_demo_command(command: str) -> bool:
     return "examples/smart-home/demo.py" in command or command.strip().startswith("demo.py")
 
 
-def test_demo_commands_use_real_flags() -> None:
-    valid_options = _demo_parser_option_strings()
-    failures: list[str] = []
+def _demo_flag_failures(docs: list[tuple[str, str]], valid_options: set[str]) -> list[str]:
+    """Failures for every demo.py command in `docs` (`(relative_path, text)` pairs).
 
-    for rel, _path, text in _corpus():
+    A command that cannot be tokenised is itself a failure: an unchecked
+    command is not a checked-and-clean one.
+    """
+    failures: list[str] = []
+    for rel, text in docs:
         for command in _extract_commands(text):
             if not _looks_like_demo_command(command):
                 continue
             try:
                 tokens = shlex.split(command)
-            except ValueError:
+            except ValueError as exc:
+                failures.append(f"{rel}: could not tokenise demo.py command {command!r}: {exc}")
                 continue
             for token in tokens:
                 if not token.startswith("--"):
@@ -210,8 +239,19 @@ def test_demo_commands_use_real_flags() -> None:
                 flag = token.split("=", 1)[0]
                 if flag not in valid_options:
                     failures.append(f"{rel}: {flag!r} in {command!r} is not a demo.py option")
+    return failures
 
+
+def test_demo_commands_use_real_flags() -> None:
+    docs = [(rel, text) for rel, _path, text in _corpus()]
+    failures = _demo_flag_failures(docs, _demo_parser_option_strings())
     assert not failures, "\n".join(failures)
+
+
+def test_untokenisable_demo_command_is_a_failure_not_a_skip() -> None:
+    doc = "```bash\nuv run python examples/smart-home/demo.py --mock 'unclosed\n```\n"
+    failures = _demo_flag_failures([("synthetic.md", doc)], _demo_parser_option_strings())
+    assert len(failures) == 1 and "could not tokenise" in failures[0]
 
 
 # ---------------------------------------------------------------------------
@@ -239,10 +279,7 @@ def _uv_run_invocations(command: str) -> list[tuple[str, str | None]]:
     the token sequence is matched wherever `uv run` appears, regardless of
     what precedes it.
     """
-    try:
-        tokens = shlex.split(command)
-    except ValueError:
-        return []
+    tokens = shlex.split(command)  # ValueError propagates: the caller reports it
     results: list[tuple[str, str | None]] = []
     for i in range(len(tokens) - 2):
         if tokens[i] == "uv" and tokens[i + 1] == "run":
@@ -252,17 +289,25 @@ def _uv_run_invocations(command: str) -> list[tuple[str, str | None]]:
     return results
 
 
-def test_uv_run_targets_exist() -> None:
-    pyproject = _pyproject()
+def _uv_run_failures(docs: list[tuple[str, str]], pyproject: dict) -> list[str]:
+    """Failures for every `uv run` command in `docs` (`(relative_path, text)` pairs).
+
+    A command that cannot be tokenised is itself a failure, as in T2.
+    """
     script_names = _project_script_names(pyproject)
     tool_names = _tool_table_names(pyproject)
     failures: list[str] = []
 
-    for rel, _path, text in _corpus():
+    for rel, text in docs:
         for command in _extract_commands(text):
             if "uv run" not in command:
                 continue
-            for name, following in _uv_run_invocations(command):
+            try:
+                invocations = _uv_run_invocations(command)
+            except ValueError as exc:
+                failures.append(f"{rel}: could not tokenise uv run command {command!r}: {exc}")
+                continue
+            for name, following in invocations:
                 if name in script_names or name in tool_names:
                     continue
                 if name == "python":
@@ -279,8 +324,19 @@ def test_uv_run_targets_exist() -> None:
                     f"{rel}: 'uv run {name}' in {command!r} is not a [project.scripts] key or a "
                     "[tool.<name>] table in pyproject.toml"
                 )
+    return failures
 
+
+def test_uv_run_targets_exist() -> None:
+    docs = [(rel, text) for rel, _path, text in _corpus()]
+    failures = _uv_run_failures(docs, _pyproject())
     assert not failures, "\n".join(failures)
+
+
+def test_untokenisable_uv_run_command_is_a_failure_not_a_skip() -> None:
+    doc = "```bash\nuv run newton-mcp 'unclosed\n```\n"
+    failures = _uv_run_failures([("synthetic.md", doc)], _pyproject())
+    assert len(failures) == 1 and "could not tokenise" in failures[0]
 
 
 # ---------------------------------------------------------------------------
@@ -302,8 +358,37 @@ def _string_tuple_elements(node: ast.AST | None, bindings: dict[str, ast.AST]) -
     return []
 
 
+def _is_os_environ(node: ast.AST) -> bool:
+    """`os.environ`, or a bare `environ` imported from `os`."""
+    return (
+        isinstance(node, ast.Attribute)
+        and node.attr == "environ"
+        and isinstance(node.value, ast.Name)
+        and node.value.id == "os"
+    ) or (isinstance(node, ast.Name) and node.id == "environ")
+
+
+def _is_env_lookup_call(func: ast.AST) -> bool:
+    """`env.get`, `os.environ.get` / `environ.get`, or `os.getenv` / `getenv`.
+
+    `env` is the name `newton_mcp.config` gives its injected environment
+    mapping. Any other `.get(...)` -- a response body, a dict of ids -- is not
+    an environment lookup and does not count.
+    """
+    if isinstance(func, ast.Attribute) and func.attr == "get":
+        receiver = func.value
+        return (isinstance(receiver, ast.Name) and receiver.id == "env") or _is_os_environ(receiver)
+    if isinstance(func, ast.Attribute) and func.attr == "getenv":
+        return isinstance(func.value, ast.Name) and func.value.id == "os"
+    return isinstance(func, ast.Name) and func.id == "getenv"
+
+
 def _collect_env_names_from_file(path: Path) -> set[str]:
-    tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    return _collect_env_names_from_source(path.read_text(encoding="utf-8"), str(path))
+
+
+def _collect_env_names_from_source(source: str, filename: str = "<source>") -> set[str]:
+    tree = ast.parse(source, filename=filename)
     names: set[str] = set()
 
     # Module-level (and any-scope) simple name bindings, for resolving a Name
@@ -326,10 +411,9 @@ def _collect_env_names_from_file(path: Path) -> set[str]:
 
     for node in ast.walk(tree):
         if isinstance(node, ast.Call):
-            # `<anything>.get("NAME")`, `os.getenv("NAME")`.
+            # `env.get("NAME")`, `os.environ.get("NAME")`, `os.getenv("NAME")`.
             if (
-                isinstance(node.func, ast.Attribute)
-                and node.func.attr in ("get", "getenv")
+                _is_env_lookup_call(node.func)
                 and node.args
                 and isinstance(node.args[0], ast.Constant)
                 and isinstance(node.args[0].value, str)
@@ -346,11 +430,7 @@ def _collect_env_names_from_file(path: Path) -> set[str]:
 
         # `os.environ["NAME"]` (or `environ["NAME"]` if imported directly).
         if isinstance(node, ast.Subscript):
-            target = node.value
-            is_environ = (isinstance(target, ast.Attribute) and target.attr == "environ") or (
-                isinstance(target, ast.Name) and target.id == "environ"
-            )
-            if is_environ and isinstance(node.slice, ast.Constant) and isinstance(node.slice.value, str):
+            if _is_os_environ(node.value) and isinstance(node.slice, ast.Constant) and isinstance(node.slice.value, str):
                 names.add(node.slice.value)
 
     return names
@@ -381,3 +461,33 @@ def test_env_vars_are_read_by_code() -> None:
                 failures.append(f"{rel}: {token!r} is not read by src/newton_mcp/**/*.py or assigned in .env.example")
 
     assert not failures, "\n".join(sorted(set(failures)))
+
+
+def test_only_real_env_access_patterns_count() -> None:
+    source = """
+import os
+from os import environ, getenv
+a = env.get("NEWTON_VIA_ENV_GET")
+b = os.environ.get("NEWTON_VIA_OS_ENVIRON_GET")
+c = os.getenv("NEWTON_VIA_OS_GETENV")
+d = os.environ["NEWTON_VIA_SUBSCRIPT"]
+e = environ.get("NEWTON_VIA_ENVIRON_GET")
+f = getenv("NEWTON_VIA_GETENV")
+g = body.get("NEWTON_VIA_RESPONSE_BODY")
+h = {}.get("NEWTON_VIA_DICT_LITERAL")
+i = ids.get("NEWTON_VIA_IDS")
+"""
+    assert _collect_env_names_from_source(source) == {
+        "NEWTON_VIA_ENV_GET",
+        "NEWTON_VIA_OS_ENVIRON_GET",
+        "NEWTON_VIA_OS_GETENV",
+        "NEWTON_VIA_SUBSCRIPT",
+        "NEWTON_VIA_ENVIRON_GET",
+        "NEWTON_VIA_GETENV",
+    }
+
+
+def test_quoted_multiline_command_is_one_command() -> None:
+    block = 'uv run python -c "\nimport json\n# a comment inside the string\n" > out.json\nuv run pytest\n'
+    commands = _join_continuations(block)
+    assert commands == ['uv run python -c "\nimport json\n# a comment inside the string\n" > out.json', "uv run pytest"]
