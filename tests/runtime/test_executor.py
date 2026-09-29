@@ -6,14 +6,21 @@ import anyio
 import pytest
 
 from newton_mcp.action.approval import create_approval
-from newton_mcp.runtime.audit import MemoryAuditSink
+from newton_mcp.runtime.audit import JsonlAuditSink, MemoryAuditSink
 from newton_mcp.runtime.catalog import CapabilityCatalog
 from newton_mcp.runtime.config import RuntimeConfig, ServerConfig, StdioTransport
 from newton_mcp.runtime.executor import ApprovalRejected, Executor, ExecutorError
 from newton_mcp.runtime.lifecycle import ActionState, new_action_record, transition
 from newton_mcp.runtime.resolver import CandidateAction
 
-from .conftest import FakeToolSpec, build_fake_server, in_memory_factory, raising_factory, recording_handler
+from .conftest import (
+    FakeToolSpec,
+    build_fake_server,
+    in_memory_factory,
+    raising_factory,
+    recording_handler,
+    task_group_raising_factory,
+)
 
 NOW = datetime(2026, 1, 1, 12, 0, 0, tzinfo=timezone.utc)
 
@@ -283,3 +290,42 @@ async def test_approval_bound_to_prerepoint_binding_identity_raises_approval_rej
         await executor.execute(
             repointed_candidate, record, approval=approval, policy_version="policy.v1", now=NOW
         )
+
+
+# ---------------------------------------------------------------------------
+# Owner review of #8: a transport error message never reaches the audit trail
+# ---------------------------------------------------------------------------
+
+SENTINEL = "SENTINEL-s3cr3t-9f2c"
+_LEAKY_MESSAGE = f"connect failed for https://operator:{SENTINEL}@hvac.example/mcp"
+
+
+@pytest.mark.parametrize(
+    "factory",
+    [raising_factory(RuntimeError(_LEAKY_MESSAGE)), task_group_raising_factory(_LEAKY_MESSAGE)],
+    ids=["plain-exception", "exception-group"],
+)
+async def test_transport_error_message_is_not_persisted(tmp_path, factory) -> None:
+    server = _server()
+    memory = MemoryAuditSink()
+    executor = Executor(_catalog(server), client_factory=factory, sink=memory)
+    record = _authorized_record()
+    candidate = _candidate(server)
+
+    record, outcome = await executor.execute(
+        candidate, record, approval=_approval(candidate, record), policy_version="policy.v1", now=NOW
+    )
+
+    assert outcome.state is ActionState.UNKNOWN
+    assert SENTINEL not in outcome.detail
+    assert outcome.detail.startswith("transport failure (")
+    for event in memory.events:
+        assert SENTINEL not in event.model_dump_json()
+
+    audit_path = tmp_path / "audit.jsonl"
+    jsonl_executor = Executor(_catalog(server), client_factory=factory, sink=JsonlAuditSink(audit_path))
+    fresh = _authorized_record()
+    await jsonl_executor.execute(
+        candidate, fresh, approval=_approval(candidate, fresh), policy_version="policy.v1", now=NOW
+    )
+    assert SENTINEL not in audit_path.read_text()

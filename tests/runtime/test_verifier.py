@@ -346,3 +346,91 @@ def test_observation_from_result_non_object_json_text_is_not_an_observation() ->
 def test_observation_from_result_no_content_is_not_an_observation() -> None:
     result = _FakeResult(content=[])
     assert observation_from_result(result) is None
+
+
+# ---------------------------------------------------------------------------
+# Owner review of #8: read_args, poll schedule/deadline, re-pointed server
+# ---------------------------------------------------------------------------
+
+
+async def test_read_tool_receives_exactly_read_args_never_action_args(deterministic_clock) -> None:
+    """T21: the read tool gets the rendered `read_args` and never the action's `args`."""
+    call_log: list[dict] = []
+
+    # Declares the action's extra parameter as optional, so the in-process server
+    # would pass it through (it drops undeclared arguments) if the verifier ever
+    # sent the action `args` instead of `read_args`.
+    async def read_tool(location: str | None = None, target_temperature_c: int | None = None) -> dict:
+        call_log.append({"location": location, "target_temperature_c": target_temperature_c})
+        return {"temperature_c": 23}
+
+    fake = build_fake_server("hvac", [FakeToolSpec("get_room_temperature", read_tool)])
+    catalog = await _catalog_for([FakeToolSpec("get_room_temperature", read_tool)], _capability())
+    verifier = Verifier(
+        catalog,
+        client_factory=in_memory_factory({"hvac": fake}),
+        clock=deterministic_clock.clock,
+        sleep=deterministic_clock.sleep,
+    )
+    candidate = _candidate().model_copy(update={"args": {"location": "kitchen", "target_temperature_c": 23}})
+
+    _record, outcome = await verifier.verify(candidate, _contract(), _executing_record(), now=NOW)
+
+    assert outcome.state is ActionState.SUCCEEDED
+    assert call_log == [{"location": "kitchen", "target_temperature_c": None}]
+
+
+async def test_polls_start_at_t0_and_none_starts_after_the_deadline(deterministic_clock) -> None:
+    """First poll at t=0, one per interval, the last one no later than the deadline."""
+    poll_times: list[float] = []
+
+    async def get_room_temperature() -> dict:
+        poll_times.append(deterministic_clock.now)
+        return {"temperature_c": 30}  # never satisfies <= 24
+
+    fake = build_fake_server("hvac", [FakeToolSpec("get_room_temperature", get_room_temperature)])
+    catalog = await _catalog_for([FakeToolSpec("get_room_temperature", get_room_temperature)], _capability())
+    verifier = Verifier(
+        catalog,
+        client_factory=in_memory_factory({"hvac": fake}),
+        poll_interval_seconds=5,
+        clock=deterministic_clock.clock,
+        sleep=deterministic_clock.sleep,
+    )
+
+    record, outcome = await verifier.verify(
+        _candidate(), _contract(timeout_seconds=20), _executing_record(), now=NOW
+    )
+
+    assert poll_times == [0, 5, 10, 15, 20]
+    assert outcome.state is ActionState.FAILED
+    assert outcome.observations == 5
+    assert record.state is ActionState.FAILED
+
+
+async def test_re_pointed_server_is_never_verified_against(deterministic_clock) -> None:
+    """A candidate resolved against another binding_identity escalates with zero reads."""
+    read_log: list[str] = []
+
+    async def get_room_temperature() -> dict:
+        read_log.append("read")
+        return {"temperature_c": 23}  # would satisfy the condition
+
+    fake = build_fake_server("hvac", [FakeToolSpec("get_room_temperature", get_room_temperature)])
+    catalog = await _catalog_for([FakeToolSpec("get_room_temperature", get_room_temperature)], _capability())
+    verifier = Verifier(
+        catalog,
+        client_factory=in_memory_factory({"hvac": fake}),
+        clock=deterministic_clock.clock,
+        sleep=deterministic_clock.sleep,
+    )
+    stale = ServerConfig(name="hvac", transport=StdioTransport(kind="stdio", command="old-hvac-cmd"))
+    candidate = _candidate().model_copy(update={"server_binding_identity": stale.binding_identity})
+
+    record, outcome = await verifier.verify(candidate, _contract(), _executing_record(), now=NOW)
+
+    assert outcome.state is ActionState.ESCALATED
+    assert record.state is ActionState.ESCALATED
+    assert outcome.observations == 0
+    assert read_log == []
+    assert "re-pointed" in outcome.reason

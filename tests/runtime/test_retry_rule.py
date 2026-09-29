@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 
 import anyio
+import pytest
 
 from newton_mcp.action.approval import create_approval
 from newton_mcp.action.contract import PhysicalActionContract, Risk, Target, Verification
@@ -153,7 +154,6 @@ async def test_non_idempotent_verified_failure_escalates_with_exactly_one_call()
         executor=executor,
         verifier=verifier,
         now_fn=lambda: NOW,
-        sink=sink,
     )
 
     assert final_state is ActionState.ESCALATED
@@ -191,7 +191,6 @@ async def test_idempotent_with_retry_limit_2_makes_exactly_three_calls_then_esca
         executor=executor,
         verifier=verifier,
         now_fn=lambda: NOW,
-        sink=sink,
     )
 
     assert final_state is ActionState.ESCALATED
@@ -241,7 +240,6 @@ async def test_forced_timeout_but_outcome_already_met_succeeds_with_exactly_one_
         executor=executor,
         verifier=verifier,
         now_fn=lambda: NOW,
-        sink=sink,
     )
 
     assert final_state is ActionState.SUCCEEDED
@@ -291,7 +289,6 @@ async def test_forced_timeout_outcome_not_met_non_idempotent_escalates_with_one_
         executor=executor,
         verifier=verifier,
         now_fn=lambda: NOW,
-        sink=sink,
     )
 
     assert final_state is ActionState.ESCALATED
@@ -341,7 +338,6 @@ async def test_forced_timeout_outcome_not_met_idempotent_retry_limit_1_makes_two
         executor=executor,
         verifier=verifier,
         now_fn=lambda: NOW,
-        sink=sink,
     )
 
     assert final_state is ActionState.ESCALATED
@@ -386,7 +382,6 @@ async def test_forced_timeout_outcome_not_met_idempotent_retry_limit_2_honours_c
         executor=executor,
         verifier=verifier,
         now_fn=lambda: NOW,
-        sink=sink,
     )
 
     assert final_state is ActionState.ESCALATED
@@ -436,7 +431,6 @@ async def test_retry_scenario_full_audit_sequence() -> None:
         executor=executor,
         verifier=verifier,
         now_fn=lambda: NOW,
-        sink=sink,
     )
 
     assert final_state is ActionState.ESCALATED
@@ -521,7 +515,6 @@ async def test_approval_expires_before_retry_escalates_naming_approval_with_one_
         executor=executor,
         verifier=verifier,
         now_fn=now_fn,
-        sink=sink,
     )
 
     assert final_state is ActionState.ESCALATED
@@ -532,3 +525,77 @@ async def test_approval_expires_before_retry_escalates_naming_approval_with_one_
     assert last_event.from_state == "failed"
     assert last_event.to_state == "escalated"
     assert "approval" in last_event.reason
+
+
+# ---------------------------------------------------------------------------
+# Owner review of #8: one audit sink for the whole run
+# ---------------------------------------------------------------------------
+
+
+async def test_run_action_refuses_split_audit_sinks_before_any_call() -> None:
+    action_log: list[str] = []
+    catalog, fake = await _build(_action_call_counter(action_log), scripted_handler([]), idempotent=True)
+    clock = DeterministicClock()
+    executor = Executor(catalog, client_factory=in_memory_factory({"hvac": fake}), sink=MemoryAuditSink())
+    verifier = Verifier(
+        catalog,
+        client_factory=in_memory_factory({"hvac": fake}),
+        sink=MemoryAuditSink(),
+        clock=clock.clock,
+        sleep=clock.sleep,
+    )
+    record = _authorized_record()
+    candidate = _candidate(idempotent=True)
+
+    with pytest.raises(ValueError, match="share one audit sink"):
+        await run_action(
+            candidate,
+            _contract(),
+            record,
+            approval=_approval(candidate, record),
+            policy_version="policy.v1",
+            executor=executor,
+            verifier=verifier,
+            now_fn=lambda: NOW,
+        )
+    assert action_log == []
+
+
+async def test_terminal_escalation_lands_in_the_shared_sink() -> None:
+    """The FAILED -> ESCALATED line written by run_action() itself is in the same trail."""
+    action_log: list[str] = []
+    read_handler = scripted_handler([{"temperature_c": 30}] * 10)
+    catalog, fake = await _build(_action_call_counter(action_log), read_handler, idempotent=False)
+    sink = MemoryAuditSink()
+    clock = DeterministicClock()
+    executor = Executor(catalog, client_factory=in_memory_factory({"hvac": fake}), sink=sink)
+    verifier = Verifier(
+        catalog,
+        client_factory=in_memory_factory({"hvac": fake}),
+        sink=sink,
+        poll_interval_seconds=1000,
+        clock=clock.clock,
+        sleep=clock.sleep,
+    )
+    record = _authorized_record()
+    candidate = _candidate(idempotent=False)
+
+    _record, final_state = await run_action(
+        candidate,
+        _contract(),
+        record,
+        approval=_approval(candidate, record),
+        policy_version="policy.v1",
+        executor=executor,
+        verifier=verifier,
+        now_fn=lambda: NOW,
+    )
+
+    assert final_state is ActionState.ESCALATED
+    assert [(e.from_state, e.to_state) for e in sink.events] == [
+        ("authorized", "executing"),
+        ("executing", "executed"),
+        ("executed", "verifying"),
+        ("verifying", "failed"),
+        ("failed", "escalated"),
+    ]

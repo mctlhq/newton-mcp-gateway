@@ -100,6 +100,11 @@ class Verifier:
         self._sleep: Sleep = sleep or anyio.sleep
         self._id_factory = id_factory
 
+    @property
+    def sink(self) -> AuditSink | None:
+        """The audit sink every transition this verifier makes is written to."""
+        return self._sink
+
     async def verify(
         self,
         candidate: CandidateAction,
@@ -197,6 +202,15 @@ class Verifier:
             return "capability declares no read_tool; the outcome can never be verified"
         if entry is None or entry.read_tool is None:
             return f"read_tool {candidate.read_tool!r} was not discovered; cannot verify"
+        if entry.server.binding_identity != candidate.server_binding_identity:
+            # The executor refuses a re-pointed server before calling; the
+            # verifier must refuse it too, or a catalog refreshed between
+            # execution and verification would confirm the action against a
+            # different server's physical state (owner review of #8).
+            return (
+                f"server {candidate.server_identity!r} binding_identity has changed since the "
+                "candidate was resolved; refusing to verify against a re-pointed server"
+            )
         if entry.read_tool.read_only_hint is False:
             return (
                 f"read_tool {candidate.read_tool!r} declares read_only_hint=False; "

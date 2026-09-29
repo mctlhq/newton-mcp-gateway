@@ -379,7 +379,11 @@ order:
 5. **Any** returned result, including an MCP *error* result, transitions `EXECUTING -> EXECUTED`:
    a completed call attempt does not prove the physical action did not happen, so there is
    deliberately no `EXECUTING -> FAILED` edge to take. A timeout or any other transport
-   `Exception`/`ExceptionGroup` transitions `EXECUTING -> UNKNOWN` instead.
+   `Exception`/`ExceptionGroup` transitions `EXECUTING -> UNKNOWN` instead. The persisted reason
+   (and `ExecutionOutcome.detail`) records only a classification -- `timeout` or `transport
+   failure (<exception class>)` -- never the exception's message: a transport error can embed the
+   server URL, and `runtime.yaml` keeps URL userinfo verbatim, so a raw message would carry a
+   credential into the append-only audit log past `redact_args()`.
    `BaseException`/`BaseExceptionGroup` (task/process cancellation) propagate untouched, exactly
    as `refresh()` already does.
 
@@ -396,6 +400,10 @@ observed at all:
 - The capability declares no `read_tool` (e.g. `announce`) -- always ends `ESCALATED`, since it
   can never be verified.
 - `read_tool` was configured but not discovered (`CatalogEntry.read_tool is None`) -- `ESCALATED`.
+- The server's current `binding_identity` differs from `candidate.server_binding_identity` (it
+  was re-pointed and the catalog refreshed after the candidate was resolved) -- `ESCALATED`, with
+  no read call. The executor refuses a re-pointed server before calling; the verifier must refuse
+  it too, or it could confirm the action against a different server's physical state.
 - The discovered read tool declares `read_only_hint is False` -- `ESCALATED`; the verifier refuses
   to call a tool the server itself says is not read-only. An **unannotated** (`None`) hint is
   allowed, and that fact is recorded on the eventual transition's reason.
@@ -444,6 +452,10 @@ non-idempotent action whose outcome is unknown.**
   caught and transitions `FAILED -> ESCALATED`, naming the failing approval field, with no further
   tool call.
 - A run always ends in exactly one of `SUCCEEDED` or `ESCALATED`.
+- Every transition of the run -- the executor's, the verifier's and `run_action()`'s own
+  escalations -- is written to **one** audit sink, `executor.sink`. `run_action()` raises
+  `ValueError` before calling anything unless `executor.sink is verifier.sink`, so a run cannot
+  split its lifecycle across sinks or drop its terminal transition.
 
 ## What this package does not do
 
