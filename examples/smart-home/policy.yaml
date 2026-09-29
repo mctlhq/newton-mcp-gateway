@@ -1,0 +1,54 @@
+# examples/smart-home/policy.yaml -- the smart-home testbed's reviewable policy.
+#
+# Safe demo capabilities only, per the epic's hard rule: no lock, oven, alarm,
+# industrial start/stop or safety-system tool belongs in this file, ever. See
+# docs/action-runtime.md for the decision matrix this feeds and
+# examples/smart-home/runtime.yaml for the capabilities these rules govern.
+#
+# Rules are evaluated in file order; the first match wins. `default: deny`
+# means anything not explicitly allowed here is denied. The AC rules bound
+# `target_temperature_c` to an inclusive 20-25 C band via `arg_ranges` --
+# `fake_alice`'s own schema accepts any integer, so this file is the only
+# place that band is enforced.
+
+policy_version: "smart-home.v1"
+default: deny
+
+rules:
+  - name: ac-reduce-temperature
+    goal_prefix: reduce_room_temperature
+    tool_name: set_ac_temperature
+    max_risk: low
+    min_confidence: 0.8
+    arg_ranges:
+      target_temperature_c: { min: 20, max: 25 }
+    decision: auto
+
+  - name: ac-raise-temperature
+    goal_prefix: raise_room_temperature
+    tool_name: set_ac_temperature
+    max_risk: low
+    min_confidence: 0.8
+    arg_ranges:
+      target_temperature_c: { min: 20, max: 25 }
+    decision: auto
+
+  - name: lighting-on-off
+    tool_name: set_light_state
+    max_risk: low
+    min_confidence: 0.8
+    decision: auto
+
+  - name: light-brightness
+    tool_name: set_light_brightness
+    max_risk: low
+    min_confidence: 0.8
+    arg_ranges:
+      brightness_pct: { min: 0, max: 100 }
+    decision: auto
+
+  - name: speaker-announcement
+    goal_prefix: announce
+    tool_name: announce
+    max_risk: low
+    decision: confirm
