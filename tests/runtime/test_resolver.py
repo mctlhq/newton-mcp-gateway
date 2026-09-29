@@ -43,7 +43,7 @@ def _contract(
         target=Target(type=target_type, location=location),
         constraints=constraints or {"desired_temperature_c": 23},
         risk=Risk.LOW,
-        verification=Verification(condition="temperature_c <= 24"),
+        verification=Verification(condition={"path": "temperature_c", "op": "le", "value": 24}),
     )
 
 

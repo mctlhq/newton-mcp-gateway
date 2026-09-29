@@ -1,1 +1,320 @@
-{"$defs":{"Evidence":{"description":"Provenance: which observation led to this contract.","properties":{"observation_id":{"anyOf":[{"type":"string"},{"type":"null"}],"default":null,"title":"Observation Id"},"summary":{"anyOf":[{"type":"string"},{"type":"null"}],"default":null,"title":"Summary"}},"title":"Evidence","type":"object"},"Risk":{"enum":["read_only","low","medium","high","critical"],"title":"Risk","type":"string"},"Target":{"additionalProperties":true,"properties":{"type":{"description":"Kind of physical target, e.g. 'environment', 'machine', 'zone'.","title":"Type","type":"string"},"location":{"anyOf":[{"type":"string"},{"type":"null"}],"default":null,"description":"Human-readable location, e.g. 'kitchen'.","title":"Location"},"resource":{"anyOf":[{"type":"string"},{"type":"null"}],"default":null,"description":"Stable asset identifier if known.","title":"Resource"}},"required":["type"],"title":"Target","type":"object"},"Verification":{"properties":{"condition":{"description":"Declarative success condition, e.g. 'temperature_c <= 24'.","title":"Condition","type":"string"},"timeout_seconds":{"default":300,"minimum":1,"title":"Timeout Seconds","type":"integer"},"retry_limit":{"default":0,"minimum":0,"title":"Retry Limit","type":"integer"}},"required":["condition"],"title":"Verification","type":"object"}},"$id":"https://github.com/mctlhq/newton-mcp-gateway/schemas/physical-action-contract.schema.json","description":"Tool-independent description of a desired physical-world outcome.","properties":{"version":{"default":"0.1","pattern":"^0\\.1$","title":"Version","type":"string"},"goal":{"description":"Desired outcome, independent of any specific tool.","title":"Goal","type":"string"},"reason":{"description":"Why the action is proposed.","title":"Reason","type":"string"},"confidence":{"anyOf":[{"maximum":1.0,"minimum":0.0,"type":"number"},{"type":"null"}],"default":null,"title":"Confidence"},"target":{"$ref":"#/$defs/Target"},"constraints":{"additionalProperties":true,"title":"Constraints","type":"object"},"risk":{"$ref":"#/$defs/Risk"},"reversible":{"default":true,"title":"Reversible","type":"boolean"},"requires_confirmation":{"anyOf":[{"type":"boolean"},{"type":"null"}],"default":null,"description":"Explicit override; if None the policy decides from risk.","title":"Requires Confirmation"},"verification":{"$ref":"#/$defs/Verification"},"evidence":{"anyOf":[{"$ref":"#/$defs/Evidence"},{"type":"null"}],"default":null}},"required":["goal","reason","target","risk","verification"],"title":"PhysicalActionContract","type":"object"}
+{
+  "$defs": {
+    "AllOf": {
+      "additionalProperties": false,
+      "description": "Satisfied only if every child condition is satisfied.",
+      "properties": {
+        "all": {
+          "items": {
+            "oneOf": [
+              {
+                "$ref": "#/$defs/Predicate"
+              },
+              {
+                "$ref": "#/$defs/AllOf"
+              },
+              {
+                "$ref": "#/$defs/AnyOf"
+              }
+            ]
+          },
+          "minItems": 1,
+          "title": "All",
+          "type": "array"
+        }
+      },
+      "required": [
+        "all"
+      ],
+      "title": "AllOf",
+      "type": "object"
+    },
+    "AnyOf": {
+      "additionalProperties": false,
+      "description": "Satisfied if at least one child condition is satisfied.",
+      "properties": {
+        "any": {
+          "items": {
+            "oneOf": [
+              {
+                "$ref": "#/$defs/Predicate"
+              },
+              {
+                "$ref": "#/$defs/AllOf"
+              },
+              {
+                "$ref": "#/$defs/AnyOf"
+              }
+            ]
+          },
+          "minItems": 1,
+          "title": "Any",
+          "type": "array"
+        }
+      },
+      "required": [
+        "any"
+      ],
+      "title": "AnyOf",
+      "type": "object"
+    },
+    "Evidence": {
+      "description": "Provenance: which observation led to this contract.",
+      "properties": {
+        "observation_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Observation Id"
+        },
+        "summary": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Summary"
+        }
+      },
+      "title": "Evidence",
+      "type": "object"
+    },
+    "Op": {
+      "enum": [
+        "eq",
+        "ne",
+        "lt",
+        "le",
+        "gt",
+        "ge"
+      ],
+      "title": "Op",
+      "type": "string"
+    },
+    "Predicate": {
+      "additionalProperties": false,
+      "description": "A single leaf comparison: observed value at `path` vs `value` under `op`.",
+      "properties": {
+        "path": {
+          "minLength": 1,
+          "title": "Path",
+          "type": "string"
+        },
+        "op": {
+          "$ref": "#/$defs/Op"
+        },
+        "value": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "integer"
+            },
+            {
+              "type": "number"
+            },
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Value"
+        }
+      },
+      "required": [
+        "path",
+        "op",
+        "value"
+      ],
+      "title": "Predicate",
+      "type": "object"
+    },
+    "Risk": {
+      "enum": [
+        "read_only",
+        "low",
+        "medium",
+        "high",
+        "critical"
+      ],
+      "title": "Risk",
+      "type": "string"
+    },
+    "Target": {
+      "additionalProperties": true,
+      "properties": {
+        "type": {
+          "description": "Kind of physical target, e.g. 'environment', 'machine', 'zone'.",
+          "title": "Type",
+          "type": "string"
+        },
+        "location": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Human-readable location, e.g. 'kitchen'.",
+          "title": "Location"
+        },
+        "resource": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Stable asset identifier if known.",
+          "title": "Resource"
+        }
+      },
+      "required": [
+        "type"
+      ],
+      "title": "Target",
+      "type": "object"
+    },
+    "Verification": {
+      "properties": {
+        "condition": {
+          "description": "Structured success condition: a predicate {path, op, value}, or an {all: [...]}/{any: [...]} composite of predicates. Never an expression string.",
+          "oneOf": [
+            {
+              "$ref": "#/$defs/Predicate"
+            },
+            {
+              "$ref": "#/$defs/AllOf"
+            },
+            {
+              "$ref": "#/$defs/AnyOf"
+            }
+          ],
+          "title": "Condition"
+        },
+        "timeout_seconds": {
+          "default": 300,
+          "minimum": 1,
+          "title": "Timeout Seconds",
+          "type": "integer"
+        },
+        "retry_limit": {
+          "default": 0,
+          "minimum": 0,
+          "title": "Retry Limit",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "condition"
+      ],
+      "title": "Verification",
+      "type": "object"
+    }
+  },
+  "$id": "https://github.com/mctlhq/newton-mcp-gateway/schemas/physical-action-contract.schema.json",
+  "description": "Tool-independent description of a desired physical-world outcome.",
+  "properties": {
+    "version": {
+      "default": "0.2",
+      "pattern": "^0\\.2$",
+      "title": "Version",
+      "type": "string"
+    },
+    "goal": {
+      "description": "Desired outcome, independent of any specific tool.",
+      "title": "Goal",
+      "type": "string"
+    },
+    "reason": {
+      "description": "Why the action is proposed.",
+      "title": "Reason",
+      "type": "string"
+    },
+    "confidence": {
+      "anyOf": [
+        {
+          "maximum": 1.0,
+          "minimum": 0.0,
+          "type": "number"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Confidence"
+    },
+    "target": {
+      "$ref": "#/$defs/Target"
+    },
+    "constraints": {
+      "additionalProperties": true,
+      "title": "Constraints",
+      "type": "object"
+    },
+    "risk": {
+      "$ref": "#/$defs/Risk"
+    },
+    "reversible": {
+      "default": true,
+      "title": "Reversible",
+      "type": "boolean"
+    },
+    "requires_confirmation": {
+      "anyOf": [
+        {
+          "type": "boolean"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "Explicit override; if None the policy decides from risk.",
+      "title": "Requires Confirmation"
+    },
+    "verification": {
+      "$ref": "#/$defs/Verification"
+    },
+    "evidence": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/Evidence"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    }
+  },
+  "required": [
+    "goal",
+    "reason",
+    "target",
+    "risk",
+    "verification"
+  ],
+  "title": "PhysicalActionContract",
+  "type": "object"
+}
