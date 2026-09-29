@@ -222,6 +222,63 @@ rules:
    contract flag must never be able to grant more authority than the operator's rules do, so a
    `deny` outcome stays `deny` even when the contract also asks for confirmation.
 
+## Contract v0.2 at a glance
+
+`src/newton_mcp/action/contract.py` defines `PhysicalActionContract`. `version` is pinned to
+`^0\.2$` (default `"0.2"`) with **no v0.1 migration shim**: this was a breaking, owner-approved
+schema change (v0.2 replaced the free-text `Verification.condition` string with the structured
+`Condition` described below), there is no database and no persisted contract, and every v0.1
+artefact in this repo was updated in the same commit as the model. A v0.1 contract -- a string
+`condition`, or `version: "0.1"` -- is rejected loudly by Pydantic, never coerced.
+
+**`PhysicalActionContract`**
+
+| Field | Type | Default | Notes |
+|---|---|---|---|
+| `version` | `str` | `"0.2"` | Pattern `^0\.2$`; any other value fails validation. |
+| `goal` | `str` | required | Desired outcome, independent of any specific tool. |
+| `reason` | `str` | required | Why the action is proposed. |
+| `confidence` | `float \| None` | `None` | `0.0 <= confidence <= 1.0` when present. |
+| `target` | `Target` | required | See below. |
+| `constraints` | `dict[str, Any]` | `{}` | Free-form; read via `constraints.<key>` template roots. |
+| `risk` | `Risk` | required | See the `Risk` ladder below. |
+| `reversible` | `bool` | `True` | |
+| `requires_confirmation` | `bool \| None` | `None` | Explicit override; `None` leaves the decision to policy. It is a confirmation *ceiling*, never a downgrade -- see Policy, above. |
+| `verification` | `Verification` | required | See below. |
+| `evidence` | `Evidence \| None` | `None` | See below. |
+
+**`Risk`** (`newton_mcp.action.contract.Risk`, a `StrEnum`), ascending: `read_only`, `low`,
+`medium`, `high`, `critical`. `critical` always denies before any policy rule is consulted (see
+Policy, above); this ladder is also the order `PolicyRule.max_risk` compares against.
+
+**`Target`** (`extra="allow"` -- a capability's own fields may ride along):
+
+| Field | Type | Default | Notes |
+|---|---|---|---|
+| `type` | `str` | required | e.g. `"environment"`, `"machine"`, `"zone"`. |
+| `location` | `str \| None` | `None` | Human-readable, e.g. `"kitchen"`. |
+| `resource` | `str \| None` | `None` | Stable asset identifier if known. |
+
+**`Verification`**
+
+| Field | Type | Default | Notes |
+|---|---|---|---|
+| `condition` | `Condition` | required | A predicate `{path, op, value}`, or an `{all: [...]}`/`{any: [...]}` composite -- see below. |
+| `timeout_seconds` | `int` | `300` | `>= 1`. Bounds the verifier's polling deadline. |
+| `retry_limit` | `int` | `0` | `>= 0`. With the default, the first verified failure escalates; see the retry rule, below. |
+
+**`Evidence`** (provenance: which observation led to this contract):
+
+| Field | Type | Default |
+|---|---|---|
+| `observation_id` | `str \| None` | `None` |
+| `summary` | `str \| None` | `None` |
+
+The committed JSON Schema, generated from this model, lives at
+`schemas/physical-action-contract.schema.json`; `tests/test_action_contract.py` asserts it is
+byte-for-byte equal to `PhysicalActionContract.model_json_schema()`. Regenerate it whenever the
+model changes -- the command lives in `CONTRIBUTING.md`'s "Regenerating the JSON schema" section.
+
 ## Verification conditions (contract v0.2)
 
 `src/newton_mcp/action/conditions.py` replaces the v0.1 free-text `Verification.condition`
@@ -341,9 +398,10 @@ missing, path is a directory, not writable) still raises `ValueError` naming the
 path, so a typo is loud.
 
 Redaction (`redact_args()`) replaces the value of any argument key whose casefolded name contains
-one of a documented set of substrings (`key`, `token`, `secret`, `password`, `credential`,
-`auth`, `cookie`, `session`, ...) with a fixed `[redacted]` marker, recursing into nested mappings
-and lists, and truncates long surviving string values. This is **key-name only and deliberately
+one of the eleven documented substrings in `SECRET_KEY_PATTERNS` (`key`, `token`, `secret`,
+`password`, `passwd`, `credential`, `auth`, `bearer`, `cookie`, `session`, `signature`) with a
+fixed `[redacted]` marker, recursing into nested mappings and lists, and truncates long surviving
+string values (`_MAX_VALUE_CHARS = 500`). This is **key-name only and deliberately
 over-eager**: a benign key like `keypad_zone` is redacted too, and there is no value-shape
 detection at all -- a secret passed under a harmless key name (e.g. `note`) still reaches the
 log. Over-redaction is the safe direction; this gap is documented rather than papered over.
@@ -431,6 +489,88 @@ Every obtained observation is evaluated with `newton_mcp.action.conditions.evalu
 - The deadline is reached with **zero** observations -> `VERIFYING -> ESCALATED`, never `FAILED`.
   Calling an unobservable world a verified failure would license a retry on no evidence at all;
   `FAILED` stays honest because it is always reachable with at least one observation behind it.
+
+## Adding an MCP actuator by configuration only
+
+A new actuator capability is added entirely through `runtime.yaml` and `policy.yaml` -- **no file
+under `src/newton_mcp/` is edited**. Worked example: a lighting capability on a new
+`streamable-http` server, safely within the demo-safe classes this repository allows (see
+`docs/safety.md`).
+
+`runtime.yaml`:
+
+```yaml
+servers:
+  - name: home-bridge
+    transport:
+      kind: streamable-http
+      url: https://home-bridge.local/mcp
+
+capabilities:
+  - server: home-bridge
+    tool: set_light_state
+    goal_prefixes: ["turn_on_light", "turn_off_light"]
+    target:
+      type: environment
+      locations: ["kitchen", "hallway"]
+    arguments:
+      location: "${target.location}"
+      "on": "${constraints.desired_on}"
+    read_tool: get_light_state
+    read_arguments:
+      location: "${target.location}"
+    idempotent: true
+```
+
+`policy.yaml` (append a rule; first match wins, so order it before any broader rule that would
+otherwise shadow it):
+
+```yaml
+rules:
+  - name: lighting
+    tool_name: set_light_state
+    max_risk: low
+    min_confidence: 0.8
+    decision: auto
+```
+
+Point the process at both files, plus (optionally) an audit trail, then refresh the catalog:
+
+```bash
+export NEWTON_MCP_RUNTIME_CONFIG=/path/to/runtime.yaml
+export NEWTON_MCP_POLICY_PATH=/path/to/policy.yaml
+export NEWTON_MCP_AUDIT_PATH=/path/to/action-audit.jsonl   # optional; unset means in-memory only
+```
+
+`CapabilityCatalog.refresh()` (or a process restart) picks up the new server and capability on
+its next discovery pass.
+
+**What the actuator itself must provide**, each tied to the gate that rejects its absence:
+
+- The tool named in `tool` must appear in the server's `list_tools` response, or the capability is
+  rejected as `tool_missing` (`runtime/catalog.py`) and never reaches the resolver.
+- The rendered `arguments` must validate against the tool's own `input_schema`, or the resolver
+  rejects the candidate as `schema_mismatch` (`Resolver._schema_mismatch()` in
+  `runtime/resolver.py`).
+- A `read_tool` must exist and, when called with `read_arguments`, return a JSON object --
+  `structured_content`, or a single text content block that parses as a JSON object
+  (`observation_from_result()` in `runtime/verifier.py`) -- or the verifier can obtain no
+  observation and the run always ends `ESCALATED`, never `SUCCEEDED` or a verified `FAILED`.
+- The read tool must not declare `read_only_hint=False`; the verifier refuses to call a tool the
+  server itself marks as not read-only, and escalates without calling
+  (`Verifier._unverifiable_reason()`). An unannotated (`None`) hint is allowed.
+- `idempotent: true` is required for `run_action()`'s retry rule to ever retry a verified failure
+  at all -- with `idempotent: false` (the default), any verified failure escalates immediately
+  regardless of `retry_limit`.
+
+`examples/smart-home/README.md`'s "Why a real Alice server is not drivable yet" section is the
+worked negative example: a real actuator missing structured read output, sitting behind
+unsupported auth, or addressing targets in a shape this runtime's resolver does not match, cannot
+be wired in by configuration alone until those gaps are closed.
+
+The safety defaults an operator should check before enabling any new capability -- action-class
+decisions, numeric timeouts, the demo-safe/never-permitted split -- live in `docs/safety.md`, not
+here.
 
 ## The retry rule: `run_action()`
 
