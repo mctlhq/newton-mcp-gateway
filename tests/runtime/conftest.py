@@ -8,6 +8,7 @@ transport at all.
 
 from __future__ import annotations
 
+import inspect
 from collections.abc import AsyncIterator, Callable, Iterable
 from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from dataclasses import dataclass
@@ -193,3 +194,76 @@ def deterministic_id_factory() -> Callable[[], str]:
 def fixed_now() -> datetime:
     """A fixed, aware UTC `datetime` for lifecycle/audit assertions."""
     return datetime(2026, 1, 1, 12, 0, 0, tzinfo=timezone.utc)
+
+
+def recording_handler(
+    call_log: list[tuple[str, dict[str, Any]]],
+    name: str,
+    arg_names: Iterable[str] = (),
+    result: Any = None,
+) -> Callable[..., Any]:
+    """A tool handler that appends `(name, kwargs)` to `call_log` and returns `result` (default `{}`).
+
+    `arg_names` becomes the handler's advertised parameter names via an
+    explicit `__signature__` override -- `MCPServer.add_tool` derives the
+    tool's input schema from `inspect.signature`, which does not support a
+    bare `**kwargs` handler, but keyword arguments still land in `kwargs` at
+    call time regardless of the declared signature.
+    """
+
+    async def handler(**kwargs: Any) -> Any:
+        call_log.append((name, kwargs))
+        return {} if result is None else result
+
+    handler.__signature__ = inspect.Signature(  # type: ignore[attr-defined]
+        parameters=[
+            inspect.Parameter(arg_name, inspect.Parameter.POSITIONAL_OR_KEYWORD, annotation=Any)
+            for arg_name in arg_names
+        ]
+    )
+    handler.__name__ = name
+    return handler
+
+
+def scripted_handler(results: Iterable[Any]) -> Callable[[], Any]:
+    """A read-tool handler that returns each of `results` in order, one per call.
+
+    Each item is either a plain JSON-able value returned as the tool's
+    result, or a zero-arg callable invoked for its side effect (e.g. to
+    raise), so a scripted scenario can mix observations with failed polls.
+    Raises `AssertionError` if called more times than `results` provides.
+    """
+    iterator = iter(results)
+
+    async def handler() -> Any:
+        try:
+            item = next(iterator)
+        except StopIteration:
+            raise AssertionError("scripted_handler called more times than results were provided") from None
+        if callable(item):
+            return item()
+        return item
+
+    return handler
+
+
+class DeterministicClock:
+    """A fake monotonic clock paired with a `sleep` that advances it -- no real waiting.
+
+    Used as the `Verifier`'s injected `clock`/`sleep` seam so a poll-loop test
+    drives the deadline deterministically instead of sleeping in real time.
+    """
+
+    def __init__(self, start: float = 0.0) -> None:
+        self.now = start
+
+    def clock(self) -> float:
+        return self.now
+
+    async def sleep(self, seconds: float) -> None:
+        self.now += seconds
+
+
+@pytest.fixture
+def deterministic_clock() -> DeterministicClock:
+    return DeterministicClock()

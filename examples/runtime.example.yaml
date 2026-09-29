@@ -31,6 +31,8 @@ capabilities:
       location: "${target.location}"
       target_temperature_c: "${constraints.desired_temperature_c}"
     read_tool: get_room_temperature
+    read_arguments:
+      location: "${target.location}"
     idempotent: true
 
   - server: home-bridge
@@ -43,6 +45,8 @@ capabilities:
       location: "${target.location}"
       "on": "${constraints.desired_on}"
     read_tool: get_light_state
+    read_arguments:
+      location: "${target.location}"
     idempotent: true
 
   - server: home-bridge

@@ -156,6 +156,7 @@ class CapabilityConfig(BaseModel):
     target: TargetMatch
     arguments: dict[str, Any] = Field(default_factory=dict)
     read_tool: str | None = None
+    read_arguments: dict[str, Any] = Field(default_factory=dict)
     idempotent: bool = False
 
     @field_validator("goal_prefixes")
