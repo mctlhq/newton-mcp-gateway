@@ -67,17 +67,5 @@ the contract's `retry_limit` has not been exhausted; everything else escalates t
 
 ## Safety defaults
 
-| action class | decision |
-|---|---|
-| read sensor / state | auto |
-| lights, speaker announcement | auto |
-| HVAC within configured bounds | auto |
-| unlock door | human approval |
-| start industrial machine | approval or deny |
-| disable safety system | deny |
-
-`critical` risk is never automated regardless of policy. Approval is invalidated if parameters
-change after it was granted: `newton_mcp.action.compute_binding` hashes `server_identity`,
-`tool_name`, `args`, `action_id`, `policy_version` and `expires_at` together, so any one of them
-changing -- including the server being re-pointed to a different transport under the same
-configured name -- makes `verify_approval` reject it. See `docs/action-runtime.md`.
+See `docs/safety.md` for the safety defaults table, the numeric defaults table, and the safety
+invariants -- this section is a pointer, not a copy, so the table exists in exactly one place.

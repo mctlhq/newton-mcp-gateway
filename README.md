@@ -14,8 +14,9 @@ This project explores two complementary integration patterns:
 > **Status: experimental, independent project.**
 > The MCP server and mock backend are functional. The real Newton adapter is implemented against
 > public documentation but has **not yet been validated against a live account**; it activates only
-> with an authorized `ATAI_API_KEY`.
-> This project is not affiliated with or endorsed by Archetype AI.
+> with an authorized `ATAI_API_KEY`. The action runtime and the smart-home testbed are
+> **mock-validated only** -- no live actuator has been driven by this runtime. This project is not
+> affiliated with or endorsed by Archetype AI.
 
 ## Why
 
@@ -226,9 +227,22 @@ smart-home server is not yet drivable by this runtime.
 | `/query` request/response shape, model families, env variable names | Archetype public docs |
 | Agents API (blueprints → bundles → runs, results/events) | Archetype public docs |
 | This gateway's MCP tool mapping | this project |
-| Physical Action Contract, policy engine, action runtime | **this project's experimental proposal** |
+| Physical Action Contract, policy engine | **this project's experimental proposal** |
+| Lifecycle (`ActionState`, including `UNKNOWN`), JSONL audit trail, executor, verifier | **this project's experimental proposal** |
+| Open questions for Archetype engineers | see `docs/archetype-integration.md` |
 
 Nothing here reverse-engineers private endpoints or circumvents access controls.
+
+## Documentation
+
+| Document | What it covers |
+|---|---|
+| [`docs/architecture.md`](docs/architecture.md) | Archetype's own terminology, Direction A vs. Direction B, and the lifecycle summary. |
+| [`docs/action-runtime.md`](docs/action-runtime.md) | The MCP host, tool discovery, resolver, policy, approval, execution, verification and audit -- in detail, traced to `src/`. |
+| [`docs/safety.md`](docs/safety.md) | The safety defaults tables, the invariants a reviewer can check, demo-safe actions, and known limitations. |
+| [`docs/archetype-integration.md`](docs/archetype-integration.md) | What is confirmed from Archetype's public documentation versus what this project proposes, plus the open questions for an Archetype engineer. |
+| [`docs/newton-api-notes.md`](docs/newton-api-notes.md) | Traceability notes for the `/query` and Files API fields `newton_analyze_image` sends. |
+| [`examples/smart-home/README.md`](examples/smart-home/README.md) | The runnable, mock-validated closed-loop demo: capabilities, flags, exit codes, and why a real actuator is not drivable yet. |
 
 ## Development
 
