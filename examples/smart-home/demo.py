@@ -50,7 +50,7 @@ from newton_mcp.action import (  # noqa: E402
     load_policy,
     propose_action,
 )
-from newton_mcp.config import Settings  # noqa: E402
+from newton_mcp.config import DEFAULT_TEXT_MODEL, Settings  # noqa: E402
 from newton_mcp.newton.api import build_backend  # noqa: E402
 from newton_mcp.newton.mock import MockNewtonBackend  # noqa: E402
 from newton_mcp.newton.protocol import NewtonBackend  # noqa: E402
@@ -73,7 +73,8 @@ DEFAULT_AUDIT_PATH = _THIS_DIR / "demo-audit.jsonl"
 
 #: The model name is arbitrary in mock mode (MockNewtonBackend ignores it
 #: beyond echoing it back); in real mode it selects Newton's text model.
-PROPOSE_MODEL = "Newton::c2_5_8b_260413b723a9ab"
+#: Shared with `newton_mcp.config` so there is one source of truth for the id.
+PROPOSE_MODEL = DEFAULT_TEXT_MODEL
 
 #: Fixed observation text for the one kitchen-cooling scenario this demo runs.
 OBSERVATION_TEXT = "kitchen 29.4 C, occupied"
@@ -106,8 +107,10 @@ class DemoResult:
     """What `run_demo` returns: the terminal state plus everything a test asserts on."""
 
     terminal_state: ActionState
+    #: Calls to the resolved action tool (`candidate.tool_name`) only -- never read polls.
     tool_call_count: int
-    observation_count: int
+    #: Calls to the capability's `read_tool` made by the verifier.
+    read_poll_count: int
     observation_id: str
     action_id: str
     tool_call_id: str
@@ -169,6 +172,19 @@ def _default_real_backend_factory() -> NewtonBackend:
     env["NEWTON_BACKEND"] = "api"
     settings = Settings.from_env(env)
     return build_backend(settings)
+
+
+def _count_calls(log: list[tuple[str, dict[str, Any]]], tool_name: str | None) -> int:
+    """How many `call_log` entries are calls to `tool_name` (0 when it is `None`).
+
+    `fake_alice` logs every call -- action tool and read tool alike -- in one
+    list, so the demo classifies entries by tool name: the action tool's
+    calls are "actuator tool calls", the read tool's are "read polls". The
+    two are never added together.
+    """
+    if tool_name is None:
+        return 0
+    return sum(1 for name, _args in log if name == tool_name)
 
 
 _RULE_NAME_RE = re.compile(r"matched rule '([^']*)'")
@@ -324,8 +340,8 @@ async def run_demo(
         print(f"DENIED: {decision.reason}")
         return DemoResult(
             terminal_state=ActionState.DENIED,
-            tool_call_count=len(log),
-            observation_count=0,
+            tool_call_count=_count_calls(log, candidate.tool_name),
+            read_poll_count=_count_calls(log, candidate.read_tool),
             observation_id=record.observation_id,
             action_id=record.action_id,
             tool_call_id=record.tool_call_id,
@@ -349,8 +365,8 @@ async def run_demo(
             print("DENIED: operator declined confirmation")
             return DemoResult(
                 terminal_state=ActionState.DENIED,
-                tool_call_count=len(log),
-                observation_count=0,
+                tool_call_count=_count_calls(log, candidate.tool_name),
+                read_poll_count=_count_calls(log, candidate.read_tool),
                 observation_id=record.observation_id,
                 action_id=record.action_id,
                 tool_call_id=record.tool_call_id,
@@ -396,10 +412,11 @@ async def run_demo(
         now_fn=now_fn,
     )
 
-    observation_count = sum(1 for name, _args in log if name == candidate.read_tool)
+    tool_call_count = _count_calls(log, candidate.tool_name)
+    read_poll_count = _count_calls(log, candidate.read_tool)
     print(f"terminal state: {terminal_state.name}")
-    print(f"actuator tool calls: {len(log)}")
-    print(f"verification observations: {observation_count}")
+    print(f"actuator tool calls: {tool_call_count}")
+    print(f"read polls: {read_poll_count}")
     print(
         f"correlation ids: observation_id={record.observation_id} action_id={record.action_id} "
         f"tool_call_id={record.tool_call_id} verification_id={record.verification_id}"
@@ -408,8 +425,8 @@ async def run_demo(
 
     return DemoResult(
         terminal_state=terminal_state,
-        tool_call_count=len(log),
-        observation_count=observation_count,
+        tool_call_count=tool_call_count,
+        read_poll_count=read_poll_count,
         observation_id=record.observation_id,
         action_id=record.action_id,
         tool_call_id=record.tool_call_id,

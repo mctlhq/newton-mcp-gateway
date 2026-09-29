@@ -60,12 +60,12 @@ until the condition is satisfied. Excerpt (mock, `--deterministic`):
 
 ```
 propose: backend='mock' status='completed'
-contract: goal='reduce_room_temperature' reason='[mock] The occupied kitchen reached 29.4 C ...'
-candidate: tool=set_ac_temperature score=1.00 why=goal prefix 'reduce_room_temperature' matched; ...
+contract: goal='reduce_room_temperature' reason='[mock] The occupied kitchen reached 29.4 C while the previous window was unoccupied.'
+candidate: tool=set_ac_temperature score=1.00 why=goal prefix 'reduce_room_temperature' matched; explicit location match; read tool discovered (score=1.00)
 policy: decision=auto reason="matched rule 'ac-reduce-temperature'"
 terminal state: SUCCEEDED
-actuator tool calls: 4
-verification observations: 3
+actuator tool calls: 1
+read polls: 3
 ```
 
 ### The failure path: AC offline
@@ -81,9 +81,13 @@ obtains real observations (never zero), never satisfies the condition, and the r
 
 ```
 terminal state: ESCALATED
-actuator tool calls: 24
-verification observations: 22
+actuator tool calls: 2
+read polls: 22
 ```
+
+`actuator tool calls` counts only calls to the action tool (`set_ac_temperature`): the first
+attempt plus the one retry. `read polls` counts the verifier's `get_room_state` calls; the two are
+never added together. Exit code `3` (`ESCALATED`).
 
 This demonstrates the exact claim `docs/action-runtime.md` makes: a successful MCP response is
 not a successful physical action, and this runtime does not confuse the two.

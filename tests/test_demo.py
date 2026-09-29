@@ -93,8 +93,11 @@ def test_t1_mock_run_succeeds_with_one_ac_call_and_four_ids(demo: ModuleType, tm
     )
     assert result.terminal_state is ActionState.SUCCEEDED
     ac_calls = [entry for entry in call_log if entry[0] == "set_ac_temperature"]
+    read_polls = [entry for entry in call_log if entry[0] == "get_room_state"]
     assert len(ac_calls) == 1
-    assert result.observation_count >= 1
+    assert result.tool_call_count == 1
+    assert result.read_poll_count == len(read_polls) >= 1
+    assert result.tool_call_count + result.read_poll_count == len(call_log)
     assert result.observation_id and result.action_id and result.tool_call_id and result.verification_id
 
 
@@ -124,10 +127,16 @@ def test_t3_ac_offline_escalates_with_at_least_one_observation_and_bounded_calls
         )
     )
     assert result.terminal_state is ActionState.ESCALATED
-    assert result.observation_count >= 1
     ac_calls = [entry for entry in call_log if entry[0] == "set_ac_temperature"]
-    # MOCK_CONTRACT_EXAMPLE carries verification.retry_limit == 1.
-    assert len(ac_calls) <= 2
+    read_polls = [entry for entry in call_log if entry[0] == "get_room_state"]
+    # MOCK_CONTRACT_EXAMPLE carries verification.retry_limit == 1 and the AC capability is
+    # idempotent, so exactly retry_limit + 1 == 2 actuator calls, never counted as read polls.
+    assert len(ac_calls) == 2
+    assert result.tool_call_count == 2
+    assert result.read_poll_count == len(read_polls) >= 2
+    # A verification poll separates the two actuator calls.
+    first, second = [i for i, entry in enumerate(call_log) if entry[0] == "set_ac_temperature"]
+    assert any(entry[0] == "get_room_state" for entry in call_log[first + 1 : second])
 
 
 def test_t4_announce_contract_escalates_with_exactly_one_call(demo: ModuleType, tmp_path: Path) -> None:
@@ -147,7 +156,9 @@ def test_t4_announce_contract_escalates_with_exactly_one_call(demo: ModuleType, 
     assert len(call_log) == 1
 
 
-def test_t5_out_of_band_temperature_is_denied_before_any_tool_call(demo: ModuleType, tmp_path: Path) -> None:
+def test_t5_out_of_band_temperature_is_denied_before_any_tool_call(
+    demo: ModuleType, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
     call_log: list[tuple[str, dict]] = []
     audit_path = tmp_path / "audit.jsonl"
     result = anyio.run(
@@ -160,6 +171,9 @@ def test_t5_out_of_band_temperature_is_denied_before_any_tool_call(demo: ModuleT
     )
     assert result.terminal_state is ActionState.DENIED
     assert call_log == []
+    assert result.tool_call_count == 0
+    assert result.read_poll_count == 0
+    assert "testbed override (not Newton output)" in capsys.readouterr().out
 
     lines = [json.loads(line) for line in audit_path.read_text().splitlines() if line.strip()]
     assert len(lines) == 1
@@ -343,9 +357,10 @@ def test_t12_mock_mode_uses_only_the_in_process_fake_and_no_credential(
         )
     )
     assert result.terminal_state is ActionState.SUCCEEDED
-    # Every actuator interaction landed in the one in-process fake's call_log.
-    assert len(call_log) == result.tool_call_count
-    assert result.tool_call_count > 0
+    # Every interaction landed in the one in-process fake's call_log, classified by tool.
+    assert result.tool_call_count == sum(1 for entry in call_log if entry[0] == "set_ac_temperature") == 1
+    assert result.read_poll_count == sum(1 for entry in call_log if entry[0] == "get_room_state")
+    assert result.tool_call_count + result.read_poll_count == len(call_log)
 
 
 # ---------------------------------------------------------------------------
@@ -372,8 +387,9 @@ def test_t13_real_mode_with_monkeypatched_backend_uses_fake_actuator_only(
         )
     )
     assert result.terminal_state is ActionState.SUCCEEDED
-    assert len(call_log) == result.tool_call_count
-    assert result.tool_call_count > 0
+    assert result.tool_call_count == sum(1 for entry in call_log if entry[0] == "set_ac_temperature") == 1
+    assert result.read_poll_count == sum(1 for entry in call_log if entry[0] == "get_room_state")
+    assert result.tool_call_count + result.read_poll_count == len(call_log)
 
     captured = capsys.readouterr()
     assert "live Newton backend" in captured.out
@@ -430,3 +446,11 @@ def test_t15_approval_expiry_covers_the_whole_deterministic_ac_offline_run(demo:
 
     # The run ended through a verified failure, never an approval rejection.
     assert lines[-1]["reason"].startswith("verified failure not retried")
+
+
+def test_demo_uses_the_shared_default_text_model(demo: ModuleType) -> None:
+    """One source of truth for the documented Newton model id (no copy in the demo)."""
+    from newton_mcp.config import DEFAULT_TEXT_MODEL
+
+    assert demo.PROPOSE_MODEL is DEFAULT_TEXT_MODEL
+    assert "Newton::" not in DEMO_PATH.read_text()

@@ -195,8 +195,8 @@ Success path excerpt:
 ```
 policy: decision=auto reason="matched rule 'ac-reduce-temperature'"
 terminal state: SUCCEEDED
-actuator tool calls: 4
-verification observations: 3
+actuator tool calls: 1
+read polls: 3
 ```
 
 `--ac-offline` demonstrates the failure this project exists to catch -- a digitally successful
@@ -207,9 +207,13 @@ tool call (`{"accepted": true}`) with no physical effect, so the run ends `ESCAL
 uv run python examples/smart-home/demo.py --mock --ac-offline
 ...
 terminal state: ESCALATED
-actuator tool calls: 24
-verification observations: 22
+actuator tool calls: 2
+read polls: 22
 ```
+
+The two actuator calls are the first attempt and the one retry allowed by the mock contract's
+`retry_limit: 1` (the AC capability is idempotent); the read polls are the verifier's
+`get_room_state` calls between and after them, counted separately.
 
 Both excerpts are **mock-validated**. See `examples/smart-home/README.md` for the full capability
 table, every flag and exit code, the `trace.jsonl` regeneration command, and why a real
