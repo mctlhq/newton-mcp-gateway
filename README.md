@@ -187,6 +187,11 @@ above: `propose_action` → capability resolution → policy → approval → ex
 against an in-process fake smart-home actuator (`fake_alice.py`) and a simulated kitchen. No
 socket, no subprocess, no credential.
 
+![Two mock runs of the smart-home demo: a verified success, and an AC that accepts the call but never cools the room, retried once and then escalated](docs/demo.gif)
+
+The recording is the mock backend with the in-process fake actuator -- no live Newton account and
+no real device. It is regenerated from `docs/demo.tape` with [VHS](https://github.com/charmbracelet/vhs).
+
 ```bash
 uv run python examples/smart-home/demo.py --mock
 ```
