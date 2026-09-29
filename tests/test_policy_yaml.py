@@ -59,7 +59,7 @@ def _contract(
         constraints={},
         risk=risk,
         requires_confirmation=requires_confirmation,
-        verification=Verification(condition="temperature_c <= 24"),
+        verification=Verification(condition={"path": "temperature_c", "op": "le", "value": 24}),
     )
 
 

@@ -16,7 +16,12 @@ from newton_mcp.action.contract import PhysicalActionContract
 if TYPE_CHECKING:
     from newton_mcp.action.propose import ProposeError
 
-CONTRACT_PROMPT_MARKER = "physical-action-contract/v0.1/strict-json"
+CONTRACT_PROMPT_MARKER = "physical-action-contract/v0.2/strict-json"
+
+_CONDITION_INSTRUCTION = (
+    "`verification.condition` is a structured object -- a predicate {path, op, value}, or an "
+    "{all: [...]}/{any: [...]} composite of predicates -- and never an expression string."
+)
 
 _SAFETY_BOUND = (
     "Safety bound: only propose benign, reversible demo actions -- for example "
@@ -51,6 +56,8 @@ def build_contract_system_prompt(allowed_goals: tuple[str, ...] = ()) -> str:
         _FORMAT_INSTRUCTION,
         "",
         _SAFETY_BOUND,
+        "",
+        _CONDITION_INSTRUCTION,
     ]
     if allowed_goals:
         lines += [

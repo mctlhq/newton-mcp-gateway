@@ -1,9 +1,14 @@
-"""Physical Action Contract v0.1 — an EXPERIMENTAL proposal from this project.
+"""Physical Action Contract v0.2 — an EXPERIMENTAL proposal from this project.
 
 Not an Archetype standard. The contract separates *what should happen in the
 physical world* (produced by a Newton Agent or a Newton /query with a strict
 JSON system prompt) from *how it is done* (resolved against MCP tools by the
 action runtime). See docs/action-runtime.md.
+
+v0.2 replaces the free-text `Verification.condition` string with a structured
+`Condition` (`newton_mcp.action.conditions`): a predicate object, or an
+`all`/`any` composite of predicates. This is a breaking, owner-approved
+schema change with no v0.1 migration shim -- see requirements.md.
 """
 
 from __future__ import annotations
@@ -12,6 +17,8 @@ from enum import StrEnum
 from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
+
+from newton_mcp.action.conditions import Condition
 
 
 class Risk(StrEnum):
@@ -31,7 +38,12 @@ class Target(BaseModel):
 
 
 class Verification(BaseModel):
-    condition: str = Field(description="Declarative success condition, e.g. 'temperature_c <= 24'.")
+    condition: Condition = Field(
+        description=(
+            "Structured success condition: a predicate {path, op, value}, or an "
+            "{all: [...]}/{any: [...]} composite of predicates. Never an expression string."
+        )
+    )
     timeout_seconds: int = Field(default=300, ge=1)
     retry_limit: int = Field(default=0, ge=0)
 
@@ -48,7 +60,7 @@ class PhysicalActionContract(BaseModel):
 
     model_config = ConfigDict(json_schema_extra={"$id": "https://github.com/mctlhq/newton-mcp-gateway/schemas/physical-action-contract.schema.json"})
 
-    version: str = Field(default="0.1", pattern=r"^0\.1$")
+    version: str = Field(default="0.2", pattern=r"^0\.2$")
     goal: str = Field(description="Desired outcome, independent of any specific tool.")
     reason: str = Field(description="Why the action is proposed.")
     confidence: float | None = Field(default=None, ge=0.0, le=1.0)

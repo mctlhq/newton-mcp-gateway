@@ -1,13 +1,15 @@
-# Action runtime: MCP host, tool discovery, policy, approval, lifecycle and audit
+# Action runtime: MCP host, tool discovery, policy, approval, execution, verification, audit
 
 > This document describes `src/newton_mcp/runtime/` and `src/newton_mcp/action/policy.py` /
-> `src/newton_mcp/action/approval.py`, **this project's experimental proposal** for Direction A
-> (MCP as Newton's action boundary). It is not an Archetype standard, and nothing described here
-> has been run against a live Newton account or a live MCP actuator server. This package
-> discovers tools, resolves candidates, decides auto/confirm/deny, can bind an approval to one
-> exact action, and tracks that action through an explicit lifecycle with an append-only audit
-> trail -- it still executes nothing: no `call_tool`, no timeout policy, no verification logic,
-> no LLM.
+> `src/newton_mcp/action/approval.py` / `src/newton_mcp/action/conditions.py`, **this project's
+> experimental proposal** for Direction A (MCP as Newton's action boundary). It is not an
+> Archetype standard, and nothing described here has been run against a live Newton account or a
+> live MCP actuator server -- every result in this document and its tests is **mock-validated**
+> only, using in-process fakes (no subprocess, no socket, no credentials). This package discovers
+> tools, resolves candidates, decides auto/confirm/deny, binds an approval to one exact action,
+> calls the chosen MCP tool with a bounded timeout, re-observes the world through a `read_tool`,
+> and tracks the whole thing through an explicit lifecycle with an append-only audit trail. It
+> still consults no LLM anywhere in the runtime path.
 
 ## Why this exists
 
@@ -24,8 +26,8 @@ tools with `list_tools`, and resolves a contract into a ranked list of concrete
 explicit reason, because a resolver that cannot explain a rejection cannot be trusted with a
 physical actuator.
 
-Later phases (not this one) turn a chosen `CandidateAction` into an actual `call_tool`, subject
-to policy, human approval, execution and outcome verification.
+A chosen `CandidateAction` is then subject to policy, human approval, and finally execution and
+outcome verification -- described in the sections below.
 
 ## `runtime.yaml`: the allow-list
 
@@ -52,9 +54,18 @@ capabilities:
     arguments:
       location: "${target.location}"
       target_temperature_c: "${constraints.desired_temperature_c}"
-    read_tool: get_room_temperature   # optional; used for later verification, and scored
+    read_tool: get_room_temperature   # optional; used for verification, and scored
+    read_arguments:                   # optional; rendered like `arguments`, passed to read_tool
+      location: "${target.location}"
     idempotent: true                  # optional, default false; retry-safety metadata only
 ```
+
+`read_arguments` renders through the same `render_arguments(...)` as `arguments` -- the same
+`${target.*}`/`${constraints.*}` roots, the same refusal of `verification.*` as an unknown root --
+and is carried on the resolved candidate as `CandidateAction.read_args`. An absent
+`read_arguments` renders to `{}`. The verifier calls `read_tool` with exactly `read_args`, never
+the action's own `args`, which could otherwise carry actuator parameters (e.g.
+`target_temperature_c`) into a read-only tool.
 
 Every model forbids unknown keys. A `runtime.yaml` that fails to validate fails loudly at load
 time -- there is no fallback to a default config, and no partial config is ever accepted. A
@@ -211,6 +222,34 @@ rules:
    contract flag must never be able to grant more authority than the operator's rules do, so a
    `deny` outcome stays `deny` even when the contract also asks for confirmation.
 
+## Verification conditions (contract v0.2)
+
+`src/newton_mcp/action/conditions.py` replaces the v0.1 free-text `Verification.condition`
+string with a structured `Condition`: exactly one of a predicate object `{path, op, value}` (`op`
+one of `eq | ne | lt | le | gt | ge`), an `{all: [Condition, ...]}` conjunction, or an
+`{any: [Condition, ...]}` disjunction, resolved through a callable Pydantic `Discriminator` (the
+wire shape has no `kind`/tag field). There is no expression language and no parser anywhere in
+this module or the rest of the repo -- a reviewer audits a condition by reading the JSON, and a
+Newton model under the strict-JSON prompt cannot emit an expression the runtime silently
+misreads. Nesting is capped at `MAX_CONDITION_DEPTH = 8`, enforced at validation time.
+
+`evaluate(condition, observation) -> ConditionResult(satisfied, reason)` is a pure function: no
+I/O, no LLM, and it never raises for a malformed comparison. `path` is a dotted path resolved by
+mapping traversal only (no list-index traversal in v0.2); a segment that is missing, or that
+encounters a non-mapping or `None` before the path is exhausted, is *not found* -- and a
+not-found path is never satisfied, for every `op` including `ne`. `eq`/`ne` compare only
+type-compatible operands (`bool` is never a number, the same rule `action/policy.py` already
+applies to `arg_ranges`); `lt|le|gt|ge` require both operands to be non-bool `int`/`float`. Any
+other pairing is a type mismatch: not satisfied, never an exception. Every reason names the
+`path`, the `op` and the contract's expected `value`, and the observed value's *type* -- never
+the raw observed value, following `approval.py`'s "a failure reason never echoes an args value".
+`all` is satisfied only if every child is; `any` is satisfied if at least one child is.
+
+This is a breaking, owner-approved schema change: `PhysicalActionContract.version` moves to
+`^0\.2$` with no v0.1 migration shim, since there is no database, no persisted contract, and every
+v0.1 artefact that existed in this repo was updated in the same commit as the model. A v0.1
+contract (a string `condition`, or `version: "0.1"`) is rejected loudly by Pydantic.
+
 ## Approval: binding to one exact action
 
 `src/newton_mcp/action/approval.py` defines `Approval`, `compute_binding`, `create_approval` and
@@ -309,24 +348,131 @@ over-eager**: a benign key like `keypad_zone` is redacted too, and there is no v
 detection at all -- a secret passed under a harmless key name (e.g. `note`) still reaches the
 log. Over-redaction is the safe direction; this gap is documented rather than papered over.
 
-This module executes nothing: no `call_tool`, no MCP session, no timeout policy, no verification
-logic, and no retry *decision* (only that a retry is *possible* and what it must carry). The
-executor and verifier (a later phase) consume `transition()`; they are not part of it.
+This module executes nothing itself: no `call_tool`, no MCP session, no timeout policy. It only
+carries the *possibility* of a retry (the `FAILED -> EXECUTING` edge and its
+`verified_failure=True` guard) -- the retry *decision*, and every call, live in
+`newton_mcp.runtime.executor` and `newton_mcp.runtime.verifier`, described next.
+
+## Executor: one bounded MCP tool call
+
+`src/newton_mcp/runtime/executor.py` defines `Executor`. `Executor.execute()` is the **only**
+code in this package that performs a `-> EXECUTING` transition: `AUTHORIZED -> EXECUTING` for a
+first attempt, `FAILED -> EXECUTING` (with `verified_failure=True`) for a retry. Per attempt, in
+order:
+
+1. Resolve the candidate's server by `resolved_identity` in the currently loaded `runtime.yaml`.
+   Absent, or `binding_identity != candidate.server_binding_identity` (the server was re-pointed
+   under the same name) -> `ExecutorError`, raised before any transition, any audit line, or any
+   transport is opened.
+2. **Re-check the context-bound approval on every attempt, the first one and any retry alike:**
+   `verify_approval(approval, candidate, record.action_id, policy_version, now)`. Invalid ->
+   `ApprovalRejected` (carrying the failing field's reason), again before any transition, audit
+   line or transport. This is what stops a retry whose approval expired between attempts. For an
+   `auto` policy decision the caller still issues an `Approval` (`approved_by="policy:<policy
+   version>:<rule>"`), so there is exactly one execution path and no approval-less bypass. The
+   binding is context binding, not authentication (see Approval, above) -- who may *approve*
+   stays the caller's concern.
+3. The `-> EXECUTING` transition, carrying the redacted `args` (and `args_digest`) on the audit
+   line.
+4. One `anyio.fail_after(call_timeout_seconds)` scope covering connect, the MCP handshake and the
+   call -- exactly like `CapabilityCatalog.refresh()` bounds discovery.
+5. **Any** returned result, including an MCP *error* result, transitions `EXECUTING -> EXECUTED`:
+   a completed call attempt does not prove the physical action did not happen, so there is
+   deliberately no `EXECUTING -> FAILED` edge to take. A timeout or any other transport
+   `Exception`/`ExceptionGroup` transitions `EXECUTING -> UNKNOWN` instead. The persisted reason
+   (and `ExecutionOutcome.detail`) records only a classification -- `timeout` or `transport
+   failure (<exception class>)` -- never the exception's message: a transport error can embed the
+   server URL, and `runtime.yaml` keeps URL userinfo verbatim, so a raw message would carry a
+   credential into the append-only audit log past `redact_args()`.
+   `BaseException`/`BaseExceptionGroup` (task/process cancellation) propagate untouched, exactly
+   as `refresh()` already does.
+
+`newton_mcp.runtime.catalog.default_client_factory` (promoted from the previous private
+`_default_client_factory`) is reused here: `mcp.Client` already speaks both `list_tools` and
+`call_tool`, so there is exactly one place in the repo that maps a transport to a client.
+
+## Verifier: re-observing the world
+
+`src/newton_mcp/runtime/verifier.py` defines `Verifier`. `Verifier.verify()` transitions
+`EXECUTED|UNKNOWN -> VERIFYING`, then, before issuing any poll, checks whether the outcome can be
+observed at all:
+
+- The capability declares no `read_tool` (e.g. `announce`) -- always ends `ESCALATED`, since it
+  can never be verified.
+- `read_tool` was configured but not discovered (`CatalogEntry.read_tool is None`) -- `ESCALATED`.
+- The server's current `binding_identity` differs from `candidate.server_binding_identity` (it
+  was re-pointed and the catalog refreshed after the candidate was resolved) -- `ESCALATED`, with
+  no read call. The executor refuses a re-pointed server before calling; the verifier must refuse
+  it too, or it could confirm the action against a different server's physical state.
+- The discovered read tool declares `read_only_hint is False` -- `ESCALATED`; the verifier refuses
+  to call a tool the server itself says is not read-only. An **unannotated** (`None`) hint is
+  allowed, and that fact is recorded on the eventual transition's reason.
+
+If verification can proceed, the verifier polls **only** the `read_tool` (never the action tool)
+with exactly `candidate.read_args` (see `read_arguments`, above) -- the first poll issued
+immediately at t=0, then every `poll_interval_seconds`, bounded by the contract's
+`verification.timeout_seconds` on an injectable `clock`/`sleep` pair (tests drive the deadline
+deterministically; production defaults to `anyio.current_time`/`anyio.sleep`). No poll *starts*
+after the deadline; one already in flight may finish up to `read_timeout_seconds` later -- the
+documented worst-case overrun. Each poll is bounded by `read_timeout_seconds` individually.
+
+Each result is turned into an observation mapping by `observation_from_result()`: an MCP *error*
+result is never an observation, even if it carries structured content -- it counts as a failed
+poll (no observation), same as a transport failure. Otherwise: `structured_content` when it is a
+mapping, else a single text content block parsed as JSON into an object, else no observation (a
+non-JSON or non-object text result never counts).
+
+Every obtained observation is evaluated with `newton_mcp.action.conditions.evaluate()` against
+`verification.condition`:
+
+- Satisfied -> `VERIFYING -> SUCCEEDED`, polling stops.
+- The deadline is reached with **at least one** observation, never satisfied -> `VERIFYING ->
+  FAILED` -- a *verified* failure, the only kind `lifecycle.py`'s `FAILED` state means.
+- The deadline is reached with **zero** observations -> `VERIFYING -> ESCALATED`, never `FAILED`.
+  Calling an unobservable world a verified failure would license a retry on no evidence at all;
+  `FAILED` stays honest because it is always reachable with at least one observation behind it.
+
+## The retry rule: `run_action()`
+
+`run_action()`, in `newton_mcp/runtime/executor.py` next to the attempt counter it depends on,
+is the whole issue in one small loop: **verify before you ever retry, and never re-send a
+non-idempotent action whose outcome is unknown.**
+
+- An attempt that ends `UNKNOWN` is never retried blindly -- the loop always calls the verifier
+  next, and `ALLOWED_TRANSITIONS` has no `UNKNOWN -> EXECUTING` edge to take even if it tried. If
+  the outcome the verifier observes is already satisfied, the run ends `SUCCEEDED` having issued
+  exactly one tool call.
+- A verified `FAILED` retries only when `candidate.idempotent` and `record.attempt <=
+  contract.verification.retry_limit` -- otherwise `FAILED -> ESCALATED`, with no further tool
+  call. With the default `retry_limit=0` the first verified failure escalates; `retry_limit=1`
+  gives exactly one retry (two tool calls total) before escalating.
+- `run_action()` delegates every `-> EXECUTING` transition to `Executor.execute()` and never
+  performs one itself -- it only decides retry vs. escalate. An `ApprovalRejected` on the first
+  attempt propagates with the record left `AUTHORIZED` (nothing was called); on a retry it is
+  caught and transitions `FAILED -> ESCALATED`, naming the failing approval field, with no further
+  tool call.
+- A run always ends in exactly one of `SUCCEEDED` or `ESCALATED`.
+- Every transition of the run -- the executor's, the verifier's and `run_action()`'s own
+  escalations -- is written to **one** audit sink, `executor.sink`. `run_action()` raises
+  `ValueError` before calling anything unless `executor.sink is verifier.sink`, so a run cannot
+  split its lifecycle across sinks or drop its terminal transition.
 
 ## What this package does not do
 
-- Execute tools (`call_tool`), retry (the retry *decision*), or change the physical world in any
-  way.
-- Verify a physical outcome (read a `read_tool`, evaluate `verification.condition`).
+- Retry a non-idempotent action, or retry any action whose outcome is unknown and unverified.
+- Verify with an LLM or any non-deterministic judge -- `evaluate()` is a pure function.
 - Enforce that a caller hands `verify_approval` the `policy_version` of the policy currently
-  loaded -- it only makes a mismatch detectable; wiring that coupling in is a later, executor
-  issue.
+  loaded -- it only makes a mismatch detectable, and the executor's own re-check on every attempt
+  is the enforcement point.
 - Revoke an approval, or give it single-use/nonce semantics.
 - Match capabilities with an LLM or an embedding model -- v0 is purely deterministic.
 - Expose itself as MCP tools, or wire into `create_server()` / `newton_mcp.config.Settings`. No
-  new MCP tool is registered for approving an action.
-- Hold long-lived MCP sessions, pool connections, or reconnect with backoff.
+  new MCP tool is registered for approving, executing or verifying an action.
+- Hold long-lived MCP sessions, pool connections, or reconnect with backoff -- a connection is
+  opened per call (discovery, execution, or a verification poll) and closed.
 
 See `docs/architecture.md` for how this fits into the full proposed pipeline (capability
 resolver -> policy -> approval -> executor -> verifier), and the repository's `README.md` for
-what is confirmed Archetype behaviour versus this project's proposal.
+what is confirmed Archetype behaviour versus this project's proposal. Every result described in
+this document is **mock-validated only**: no code here has run against a live actuator or live
+Newton credentials.

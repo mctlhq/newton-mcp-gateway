@@ -53,6 +53,7 @@ class CandidateAction(BaseModel):
     tool_name: str
     args: dict[str, Any]
     read_tool: str | None
+    read_args: dict[str, Any]
     idempotent: bool
     score: float
     why: str
@@ -266,6 +267,16 @@ class Resolver:
                 detail=f"placeholder {exc.placeholder!r}: {exc}",
             )
 
+        try:
+            read_args = render_arguments(capability.read_arguments, contract)
+        except TemplateError as exc:
+            return Rejection(
+                server_identity=server_identity,
+                tool_name=tool_name,
+                stage="template_error",
+                detail=f"placeholder {exc.placeholder!r}: {exc}",
+            )
+
         schema_error = self._schema_mismatch(entry.tool.input_schema, args)
         if schema_error is not None:
             return Rejection(
@@ -291,6 +302,7 @@ class Resolver:
             tool_name=tool_name,
             args=args,
             read_tool=capability.read_tool,
+            read_args=read_args,
             idempotent=capability.idempotent,
             score=score,
             why=why,

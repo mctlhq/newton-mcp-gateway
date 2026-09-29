@@ -267,7 +267,7 @@ async def test_observed_server_info_is_metadata_only() -> None:
         reason="test",
         target=Target(type="environment"),
         risk=Risk.LOW,
-        verification=Verification(condition="ok"),
+        verification=Verification(condition={"path": "state", "op": "eq", "value": "ok"}),
     )
     before = Resolver(catalog).resolve(contract)
 

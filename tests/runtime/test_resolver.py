@@ -43,7 +43,7 @@ def _contract(
         target=Target(type=target_type, location=location),
         constraints=constraints or {"desired_temperature_c": 23},
         risk=Risk.LOW,
-        verification=Verification(condition="temperature_c <= 24"),
+        verification=Verification(condition={"path": "temperature_c", "op": "le", "value": 24}),
     )
 
 
@@ -399,3 +399,53 @@ async def test_example_config_resolves_against_example_contract() -> None:
 
     assert len(result.candidates) >= 1
     assert result.candidates[0].tool_name == "set_target_temperature"
+
+
+# ---------------------------------------------------------------------------
+# Owner review of #8 (T21): read_arguments rendering
+# ---------------------------------------------------------------------------
+
+
+def _read_capability(read_arguments: dict | None) -> CapabilityConfig:
+    extra = {} if read_arguments is None else {"read_arguments": read_arguments}
+    return CapabilityConfig(
+        server="hvac",
+        tool="set_target_temperature",
+        goal_prefixes=("reduce_room_temperature",),
+        target=TargetMatch(type="environment", locations=("kitchen",)),
+        arguments={"location": "${target.location}", "target_temperature_c": "${constraints.desired_temperature_c}"},
+        read_tool="get_room_temperature",
+        idempotent=True,
+        **extra,
+    )
+
+
+async def _resolve_with(read_arguments: dict | None):
+    fake = build_fake_server(
+        "hvac", [FakeToolSpec("set_target_temperature", set_target_temperature), FakeToolSpec("get_room_temperature", get_room_temperature)]
+    )
+    config = RuntimeConfig(servers=(_server("hvac"),), capabilities=(_read_capability(read_arguments),))
+    catalog = await _catalog_for(config, {"hvac": fake})
+    return Resolver(catalog).resolve(_contract())
+
+
+async def test_read_arguments_template_is_rendered_into_read_args() -> None:
+    result = await _resolve_with({"location": "${target.location}"})
+
+    assert len(result.candidates) == 1
+    assert result.candidates[0].read_args == {"location": "kitchen"}
+    assert result.candidates[0].args == {"location": "kitchen", "target_temperature_c": 23}
+
+
+async def test_absent_read_arguments_gives_empty_read_args() -> None:
+    result = await _resolve_with(None)
+
+    assert len(result.candidates) == 1
+    assert result.candidates[0].read_args == {}
+
+
+async def test_read_arguments_refuses_verification_root() -> None:
+    result = await _resolve_with({"condition": "${verification.condition}"})
+
+    assert result.candidates == ()
+    assert [r.stage for r in result.rejections] == ["template_error"]

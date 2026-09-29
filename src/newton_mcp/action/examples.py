@@ -14,7 +14,7 @@ from __future__ import annotations
 from typing import Any
 
 MOCK_CONTRACT_EXAMPLE: dict[str, Any] = {
-    "version": "0.1",
+    "version": "0.2",
     "goal": "reduce_room_temperature",
     "reason": "The occupied kitchen reached 29.4 C while the previous window was unoccupied.",
     "confidence": 0.96,
@@ -26,7 +26,11 @@ MOCK_CONTRACT_EXAMPLE: dict[str, Any] = {
     },
     "risk": "low",
     "reversible": True,
-    "verification": {"condition": "temperature_c <= 24", "timeout_seconds": 600, "retry_limit": 1},
+    "verification": {
+        "condition": {"path": "temperature_c", "op": "le", "value": 24},
+        "timeout_seconds": 600,
+        "retry_limit": 1,
+    },
     "evidence": {
         "observation_id": "obs-2026-09-28-0001",
         "summary": "occupancy=true, temperature_c=29.4",

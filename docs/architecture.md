@@ -38,8 +38,8 @@ Newton / Newton Agent
    ├─ capability resolver   (discover tools, match target/location/args)
    ├─ policy engine         (auto / confirm / deny)        ← implemented, deterministic
    ├─ approval              (tied to the exact normalized action)  ← implemented, see below
-   ├─ executor              (MCP tool calls, idempotent where possible)
-   └─ verifier              (observe → did the physical outcome happen? → retry / escalate)
+   ├─ executor              (MCP tool calls, idempotent where possible)  ← implemented, mock-validated
+   └─ verifier              (observe → did the physical outcome happen? → retry / escalate)  ← implemented, mock-validated
         │
         └──────────────── feedback to Newton (new observation)
 ```
@@ -52,6 +52,18 @@ never blindly retried. See `docs/action-runtime.md`.
 
 Correlation ids to carry through every step: `observation_id`, `action_id`, `tool_call_id`,
 `verification_id`.
+
+### Digital success is not physical success
+
+A successful MCP tool call is not a successful physical action: `set_target_temperature(23)` can
+return `200 OK` while the AC is offline, and a timeout means the runtime does not know whether
+anything happened at all. The retry rule this proposal implements (`newton_mcp.runtime.executor`,
+`newton_mcp.runtime.verifier`) is one sentence: **verify before you ever retry, and never re-send
+a non-idempotent action whose outcome is unknown.** Concretely: an `EXECUTING -> EXECUTED` or
+`EXECUTING -> UNKNOWN` outcome is always verified through the capability's `read_tool` before any
+retry decision is made; a verified failure only retries when the capability is `idempotent` and
+the contract's `retry_limit` has not been exhausted; everything else escalates to a human. See
+`docs/action-runtime.md` for the full executor/verifier behaviour.
 
 ## Safety defaults
 

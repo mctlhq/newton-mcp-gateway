@@ -112,7 +112,7 @@ A successful MCP tool call is not a successful physical action. `set_temperature
 `200 OK` while the AC is offline, the wrong zone was changed, or the room simply does not cool.
 Physical actions need **policy, approval and outcome verification** on top of ordinary tool calling.
 
-This project proposes a tool-independent **Physical Action Contract** (`schemas/`, v0.1):
+This project proposes a tool-independent **Physical Action Contract** (`schemas/`, v0.2):
 
 ```json
 {
@@ -122,9 +122,17 @@ This project proposes a tool-independent **Physical Action Contract** (`schemas/
   "target": { "type": "environment", "location": "kitchen" },
   "constraints": { "desired_temperature_c": 23, "minimum_temperature_c": 20, "maximum_temperature_c": 25 },
   "risk": "low",
-  "verification": { "condition": "temperature_c <= 24", "timeout_seconds": 600 }
+  "verification": {
+    "condition": { "path": "temperature_c", "op": "le", "value": 24 },
+    "timeout_seconds": 600
+  }
 }
 ```
+
+`verification.condition` is a structured object, never an expression string: a predicate
+`{path, op, value}` (`op` one of `eq | ne | lt | le | gt | ge`), or an `{all: [...]}` / `{any:
+[...]}` composite of predicates. There is no expression parser and no `eval` anywhere in the
+repo -- a reviewer audits a condition by reading the JSON.
 
 Newton says *what* should happen. The MCP environment knows *how*. A small action runtime sits in
 between:
@@ -135,8 +143,9 @@ contract → capability match (MCP tool discovery) → policy (auto / confirm / 
 ```
 
 The contract can be produced by a Newton `/query` with a strict JSON system prompt — a documented
-usage pattern — or by a Newton Agent's output. The policy engine in `newton_mcp/action/` is a
-deterministic first cut. The runtime, capability resolver and verifier are the next phases.
+usage pattern — or by a Newton Agent's output. The full pipeline above — capability resolver,
+policy engine, approval, executor and verifier — is implemented and mock-validated; see
+`docs/action-runtime.md`.
 
 The `newton_propose_action` MCP tool implements the first link of that chain: it sends the caller's
 observation (`text_events` / `json_events`) to Newton C with a strict JSON system prompt that embeds
@@ -164,8 +173,11 @@ that a re-pointed server or a changed argument invalidates. `src/newton_mcp/runt
 tracks an approved action through an explicit `ActionState` machine (including an `UNKNOWN` state
 for a tool-call timeout, which can never go straight back to `EXECUTING`) with four correlation
 ids, and `src/newton_mcp/runtime/audit.py` writes one append-only, redacted JSONL line per
-accepted transition. It executes nothing -- no execution, no verification. See
-`docs/action-runtime.md`.
+accepted transition. `src/newton_mcp/runtime/executor.py` then calls the chosen MCP tool with a
+bounded timeout, and `src/newton_mcp/runtime/verifier.py` re-observes the world through the
+capability's `read_tool`, evaluating the contract's structured `verification.condition`
+(`src/newton_mcp/action/conditions.py`) before ever deciding to retry a non-idempotent action.
+Mock-validated only -- no live actuator or live Newton credentials. See `docs/action-runtime.md`.
 
 ## What is confirmed vs. proposed
 

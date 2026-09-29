@@ -15,6 +15,14 @@ def test_example_contract_validates():
     c = PhysicalActionContract.model_validate_json(EXAMPLE.read_text())
     assert c.goal == "reduce_room_temperature"
     assert c.risk is Risk.LOW
+    assert c.version == "0.2"
+
+
+def test_version_rejects_v0_1():
+    data = json.loads(EXAMPLE.read_text())
+    data["version"] = "0.1"
+    with pytest.raises(ValidationError):
+        PhysicalActionContract.model_validate(data)
 
 
 def test_schema_file_is_in_sync_with_model():

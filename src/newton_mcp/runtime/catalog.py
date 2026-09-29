@@ -86,11 +86,14 @@ class CatalogSnapshot(BaseModel):
 _EMPTY_SNAPSHOT = CatalogSnapshot()
 
 
-def _default_client_factory(server: ServerConfig) -> AbstractAsyncContextManager[SupportsListTools]:
+def default_client_factory(server: ServerConfig) -> AbstractAsyncContextManager[SupportsListTools]:
     """Map `StdioTransport` -> subprocess `Client`, `HttpTransport` -> streamable-http `Client`.
 
     This is the seam a pooled/long-lived implementation would later replace; tests pass
-    their own factory so they spawn no subprocess and open no socket.
+    their own factory so they spawn no subprocess and open no socket. `mcp.Client` speaks
+    both `list_tools` and `call_tool`, so `runtime/executor.py` reuses this same factory
+    rather than duplicating the transport mapping -- there is exactly one place that maps
+    a transport to a client.
     """
     transport = server.transport
     target: str | StdioServerParameters
@@ -105,6 +108,10 @@ def _default_client_factory(server: ServerConfig) -> AbstractAsyncContextManager
     else:  # pragma: no cover - the discriminated union covers every case
         raise ValueError(f"unsupported transport {transport!r}")
     return Client(target)  # type: ignore[return-value]
+
+
+#: Backward-compatible alias for the previous private name.
+_default_client_factory = default_client_factory
 
 
 def _truncate(text: str) -> str:
@@ -124,7 +131,7 @@ class CapabilityCatalog:
         server_timeout_seconds: float = DEFAULT_SERVER_TIMEOUT_SECONDS,
     ) -> None:
         self._config = config
-        self._client_factory = client_factory or _default_client_factory
+        self._client_factory = client_factory or default_client_factory
         self._server_timeout_seconds = server_timeout_seconds
         self._snapshot: CatalogSnapshot = _EMPTY_SNAPSHOT
 
