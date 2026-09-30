@@ -260,6 +260,8 @@ async def run_demo(
 
     print("actuator: in-process fake (fake_alice), not a real device")
 
+    runtime_config = load_runtime_config(RUNTIME_YAML_PATH)
+
     if contract_override is not None:
         contract = contract_override
         observation_id = observation_id_override or f"obs-{secrets.token_hex(8)}"
@@ -271,9 +273,8 @@ async def run_demo(
         else:
             backend = MockNewtonBackend()
 
-        runtime_config_for_goals = load_runtime_config(RUNTIME_YAML_PATH)
         allowed_goals = sorted(
-            {prefix for capability in runtime_config_for_goals.capabilities for prefix in capability.goal_prefixes}
+            {prefix for capability in runtime_config.capabilities for prefix in capability.goal_prefixes}
         )
 
         propose_result: ProposeActionResult = await propose_action(
@@ -306,7 +307,6 @@ async def run_demo(
     start_now = now_fn()
     record = new_action_record(now=start_now, observation_id=observation_id, id_factory=id_factory)
 
-    runtime_config = load_runtime_config(RUNTIME_YAML_PATH)
     catalog = CapabilityCatalog(runtime_config, client_factory=client_factory)
     snapshot = await catalog.refresh()
     for problem in snapshot.problems:

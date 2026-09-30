@@ -13,7 +13,7 @@ account — see the README status line.
 | `file_ids`: pass the extension-bearing `file_id`, not `file_uid`; `/query` filters by extension; `.png`/`.jpg`/`.jpeg` contents are injected into the Newton text model's context | yes | `/api-reference/query` |
 | `POST /v0.5/files`, `multipart/form-data`, `-F "file=@..."`; response `is_valid`, `file_id`, `file_uid`; 512 MB max; JPEG/PNG among accepted types | yes | `/api-reference/files/upload` |
 | `POST /v0.5/files/base64`, multipart form field `file` holding base64 text | yes | `/api-reference/files/upload-base64` |
-| `mime_type` as any API field | no | gateway-side validation only; never sent on the wire |
+| `mime_type` as any API field | no | gateway-side validation only (schema enum image/png, image/jpeg, or null); never sent on the wire. Deliberate input rejections surface as actionable tool errors |
 | `data.json` `event_data` shape (arbitrary keys, no `contents` wrapper) | documented, but differs from what `newton_query` currently sends | Data Events page. `newton_query` currently wraps JSON as `{"contents": ...}`; **not changed by this proposal**, tracked as an open item for issue #12 |
 
 ## Documented but unused by this change

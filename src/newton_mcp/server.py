@@ -1,6 +1,6 @@
 """MCP server exposing Newton as a capability (Direction B).
 
-Three tools on purpose. More is not better: each tool maps to a documented
+Four tools on purpose. More is not better: each tool maps to a documented
 /query pattern and returns structured, auditable output.
 """
 
@@ -8,19 +8,42 @@ from __future__ import annotations
 
 import base64
 import binascii
+import functools
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
-from typing import Any, AsyncIterator
+from typing import Any, AsyncIterator, Awaitable, Callable, TypeVar
 
 from mcp.server.mcpserver import Context, MCPServer
+from mcp.server.mcpserver.exceptions import ToolError
 from mcp.types import ToolAnnotations
 
 from newton_mcp import __version__
 from newton_mcp.action.propose import propose_action
 from newton_mcp.config import Settings
+from newton_mcp.errors import InputValidationError
 from newton_mcp.newton.api import build_backend
-from newton_mcp.newton.models import IMAGE_FILE_EXTENSIONS, IMAGE_MIME_EXTENSIONS, DataEvent, NewtonQueryRequest
+from newton_mcp.newton.models import IMAGE_FILE_EXTENSIONS, IMAGE_MIME_EXTENSIONS, DataEvent, ImageMimeType, NewtonQueryRequest
 from newton_mcp.newton.protocol import NewtonBackend
+
+
+_T = TypeVar("_T")
+
+
+def _surface_input_errors(fn: Callable[..., Awaitable[_T]]) -> Callable[..., Awaitable[_T]]:
+    """Translate only `InputValidationError` into an SDK `ToolError`.
+
+    Any other exception (including a backend `ValueError`) is left alone so the
+    SDK keeps reporting it as a generic failure without exposing its message.
+    """
+
+    @functools.wraps(fn)
+    async def wrapper(*args: Any, **kwargs: Any) -> _T:
+        try:
+            return await fn(*args, **kwargs)
+        except InputValidationError as exc:
+            raise ToolError(str(exc)) from None
+
+    return wrapper
 
 
 @dataclass
@@ -62,6 +85,7 @@ def create_server(settings: Settings | None = None, backend: NewtonBackend | Non
         ),
         annotations=ToolAnnotations(read_only_hint=True, open_world_hint=True),
     )
+    @_surface_input_errors
     async def newton_query(
         ctx: Context,
         query: str,
@@ -96,6 +120,7 @@ def create_server(settings: Settings | None = None, backend: NewtonBackend | Non
         ),
         annotations=ToolAnnotations(read_only_hint=True, open_world_hint=True),
     )
+    @_surface_input_errors
     async def newton_embed_timeseries(
         ctx: Context,
         channels: list[list[float]],
@@ -104,7 +129,7 @@ def create_server(settings: Settings | None = None, backend: NewtonBackend | Non
     ) -> dict[str, Any]:
         state = _state(ctx)
         if not channels or any(len(c) == 0 for c in channels):
-            raise ValueError("channels must be a non-empty list of non-empty sample lists")
+            raise InputValidationError("channels must be a non-empty list of non-empty sample lists")
         request = NewtonQueryRequest(
             model=model or state.settings.omega_model,
             query="",
@@ -127,11 +152,12 @@ def create_server(settings: Settings | None = None, backend: NewtonBackend | Non
         ),
         annotations=ToolAnnotations(read_only_hint=True, open_world_hint=True),
     )
+    @_surface_input_errors
     async def newton_analyze_image(
         ctx: Context,
         question: str,
         image_base64: str | None = None,
-        mime_type: str | None = None,
+        mime_type: ImageMimeType | None = None,
         file_id: str | None = None,
         system_prompt: str = "",
         max_new_tokens: int = 400,
@@ -141,7 +167,7 @@ def create_server(settings: Settings | None = None, backend: NewtonBackend | Non
 
         if (image_base64 is None) == (file_id is None):
             image_base64_state = "set" if image_base64 is not None else None
-            raise ValueError(
+            raise InputValidationError(
                 "exactly one of image_base64 (with mime_type) or file_id is required, "
                 f"got image_base64={image_base64_state!r}, file_id={file_id!r}"
             )
@@ -149,7 +175,7 @@ def create_server(settings: Settings | None = None, backend: NewtonBackend | Non
         if image_base64 is not None:
             accepted = sorted(IMAGE_MIME_EXTENSIONS)
             if mime_type is None or mime_type not in IMAGE_MIME_EXTENSIONS:
-                raise ValueError(
+                raise InputValidationError(
                     f"mime_type is required with image_base64 and must be one of {accepted}, "
                     f"got {mime_type!r}"
                 )
@@ -163,7 +189,7 @@ def create_server(settings: Settings | None = None, backend: NewtonBackend | Non
             max_bytes = state.settings.max_image_bytes
             max_encoded_len = 4 * ((max_bytes + 2) // 3)
             if len(payload) > max_encoded_len:
-                raise ValueError(
+                raise InputValidationError(
                     f"image_base64 is {len(payload)} characters, longer than the {max_encoded_len} "
                     f"characters that can encode the {max_bytes} byte limit; "
                     "raise NEWTON_MAX_IMAGE_BYTES to allow larger images"
@@ -171,9 +197,11 @@ def create_server(settings: Settings | None = None, backend: NewtonBackend | Non
             try:
                 raw = base64.b64decode(payload, validate=True)
             except (binascii.Error, ValueError) as exc:
-                raise ValueError(f"image_base64 is not valid base64: {exc}") from None
+                raise InputValidationError(f"image_base64 is not valid base64: {exc}") from None
+            if len(raw) == 0:
+                raise InputValidationError("image_base64 decodes to zero bytes; provide a non-empty image")
             if len(raw) > max_bytes:
-                raise ValueError(
+                raise InputValidationError(
                     f"decoded image is {len(raw)} bytes, exceeding the {max_bytes} "
                     "byte limit; raise NEWTON_MAX_IMAGE_BYTES to allow larger images"
                 )
@@ -182,7 +210,7 @@ def create_server(settings: Settings | None = None, backend: NewtonBackend | Non
         else:
             assert file_id is not None
             if not file_id.lower().endswith(IMAGE_FILE_EXTENSIONS):
-                raise ValueError(
+                raise InputValidationError(
                     f"file_id must end in one of {IMAGE_FILE_EXTENSIONS} (the documented "
                     "extension-bearing file_id, not a file_uid, since /query filters files "
                     f"by extension), got {file_id!r}"
@@ -213,6 +241,7 @@ def create_server(settings: Settings | None = None, backend: NewtonBackend | Non
         ),
         annotations=ToolAnnotations(read_only_hint=True, open_world_hint=True),
     )
+    @_surface_input_errors
     async def newton_propose_action(
         ctx: Context,
         text_events: list[str] | None = None,

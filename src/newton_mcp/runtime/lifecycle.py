@@ -80,11 +80,6 @@ REQUIRES_VERIFIED_FAILURE: frozenset[tuple[ActionState, ActionState]] = frozense
     {(ActionState.FAILED, ActionState.EXECUTING)}
 )
 
-#: States with no outgoing edge at all.
-TERMINAL_STATES: frozenset[ActionState] = frozenset(
-    state for state, targets in ALLOWED_TRANSITIONS.items() if not targets
-)
-
 assert set(ALLOWED_TRANSITIONS) == set(ActionState), (
     "ALLOWED_TRANSITIONS must cover every ActionState member, so adding a state "
     "without deciding its outgoing edges fails immediately instead of producing "

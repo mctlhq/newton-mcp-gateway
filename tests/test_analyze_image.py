@@ -1,3 +1,5 @@
+from mcp.server.mcpserver.exceptions import ToolError
+from pydantic import ValidationError
 import base64
 import json
 
@@ -155,7 +157,9 @@ async def test_invalid_input_raises_before_any_request(mock_backend: MockNewtonB
     with pytest.raises(Exception) as ei:
         await call_tool(server, settings, mock_backend, "newton_analyze_image", kwargs)
     cause = _root_cause(ei.value)
-    assert isinstance(cause, ValueError)
+    # A MIME outside the schema enum is rejected by the SDK's argument validation
+    # (a pydantic ValidationError); every other case is a marked ToolError.
+    assert isinstance(cause, (ToolError, ValidationError))
     assert message_fragment in str(cause)
     assert mock_backend.requests == []
 
@@ -169,7 +173,7 @@ async def test_oversize_image_rejected_before_request(mock_backend: MockNewtonBa
             {"question": "q", "image_base64": TINY_PNG_B64, "mime_type": "image/png"},
         )
     cause = _root_cause(ei.value)
-    assert isinstance(cause, ValueError)
+    assert isinstance(cause, ToolError)
     # TINY_PNG's encoding is far past the 8-character bound for a 4-byte limit, so the
     # pre-decode length check rejects it; the post-decode check has its own test below.
     assert str(len(TINY_PNG_B64)) in str(cause)
@@ -188,7 +192,7 @@ async def test_invalid_base64_error_does_not_echo_payload(mock_backend: MockNewt
             {"question": "q", "image_base64": garbage, "mime_type": "image/png"},
         )
     cause = _root_cause(ei.value)
-    assert isinstance(cause, ValueError)
+    assert isinstance(cause, ToolError)
     assert garbage not in str(cause)
 
 
@@ -211,7 +215,7 @@ async def test_oversize_payload_rejected_before_decoding(mock_backend: MockNewto
             {"question": "q", "image_base64": payload, "mime_type": "image/png"},
         )
     cause = _root_cause(ei.value)
-    assert isinstance(cause, ValueError)
+    assert isinstance(cause, ToolError)
     assert "NEWTON_MAX_IMAGE_BYTES" in str(cause)
     assert payload not in str(cause)
     assert mock_backend.requests == []
@@ -245,6 +249,18 @@ async def test_one_byte_over_limit_caught_by_post_decode_check(mock_backend: Moc
             {"question": "q", "image_base64": payload, "mime_type": "image/png"},
         )
     cause = _root_cause(ei.value)
-    assert isinstance(cause, ValueError)
+    assert isinstance(cause, ToolError)
     assert f"decoded image is {limit + 1} bytes" in str(cause)
     assert mock_backend.requests == []
+
+
+async def test_empty_image_rejected_before_request(mock_backend):
+    settings = Settings()
+    server = create_server(settings, backend=mock_backend)
+    for payload in ("", "data:image/png;base64,"):
+        with pytest.raises(Exception) as ei:
+            await call_tool(
+                server, settings, mock_backend, "newton_analyze_image",
+                {"question": "q", "image_base64": payload, "mime_type": "image/png"},
+            )
+        assert isinstance(_root_cause(ei.value), ToolError)

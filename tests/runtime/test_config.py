@@ -659,3 +659,20 @@ def test_yaml_alias_cycle_does_not_recurse_in_auth_screen() -> None:
     cyclic["extra"] = cyclic
     with pytest.raises(ValidationError):
         RuntimeConfig.model_validate(cyclic)
+
+
+def test_canonical_url_keeps_ipv6_brackets():
+    from newton_mcp.runtime.config import _canonical_url
+
+    assert _canonical_url("http://[::1]:8080/mcp") == "http://[::1]:8080/mcp"
+
+
+def test_malformed_ipv6_url_rejected_without_echo():
+    import pytest
+    from pydantic import ValidationError
+
+    from newton_mcp.runtime.config import HttpTransport
+
+    with pytest.raises(ValidationError) as ei:
+        HttpTransport(kind="streamable-http", url="http://user:sekret@[::1/mcp")
+    assert "sekret" not in str(ei.value)
