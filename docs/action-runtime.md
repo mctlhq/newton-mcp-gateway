@@ -290,7 +290,7 @@ this module or the rest of the repo -- a reviewer audits a condition by reading 
 Newton model under the strict-JSON prompt cannot emit an expression the runtime silently
 misreads. Nesting is capped at `MAX_CONDITION_DEPTH = 8`, enforced at validation time.
 
-`evaluate(condition, observation) -> ConditionResult(satisfied, reason)` is a pure function: no
+`evaluate(condition, observation) -> ConditionResult(satisfied, reason, known)` is a pure function: no
 I/O, no LLM, and it never raises for a malformed comparison. `path` is a dotted path resolved by
 mapping traversal only (no list-index traversal in v0.2); a segment that is missing, or that
 encounters a non-mapping or `None` before the path is exhausted, is *not found* -- and a
@@ -300,7 +300,10 @@ applies to `arg_ranges`); `lt|le|gt|ge` require both operands to be non-bool `in
 other pairing is a type mismatch: not satisfied, never an exception. Every reason names the
 `path`, the `op` and the contract's expected `value`, and the observed value's *type* -- never
 the raw observed value, following `approval.py`'s "a failure reason never echoes an args value".
-`all` is satisfied only if every child is; `any` is satisfied if at least one child is.
+`known=False` distinguishes missing paths, incompatible types and non-finite numbers from a
+known negative comparison. Such data never establishes a verified failure. `all` is satisfied
+only if every child is; an unknown child makes a negative result unknown. `any` is satisfied
+if at least one known child is satisfied; otherwise an unknown child makes its result unknown.
 
 This is a breaking, owner-approved schema change: `PhysicalActionContract.version` moves to
 `^0\.2$` with no v0.1 migration shim, since there is no database, no persisted contract, and every
@@ -449,6 +452,12 @@ order:
 `_default_client_factory`) is reused here: `mcp.Client` already speaks both `list_tools` and
 `call_tool`, so there is exactly one place in the repo that maps a transport to a client.
 
+The executor captures a private deep copy of the candidate and server transport before
+checking the approval or awaiting connection. The same argument snapshot is verified, audited
+and sent; mutations to a caller's nested dictionaries during connection cannot alter the
+approved command. `run_action()` also snapshots the contract and candidate for the entire run,
+and the verifier snapshots its read context.
+
 ## Verifier: re-observing the world
 
 `src/newton_mcp/runtime/verifier.py` defines `Verifier`. `Verifier.verify()` transitions
@@ -470,9 +479,10 @@ If verification can proceed, the verifier polls **only** the `read_tool` (never 
 with exactly `candidate.read_args` (see `read_arguments`, above) -- the first poll issued
 immediately at t=0, then every `poll_interval_seconds`, bounded by the contract's
 `verification.timeout_seconds` on an injectable `clock`/`sleep` pair (tests drive the deadline
-deterministically; production defaults to `anyio.current_time`/`anyio.sleep`). No poll *starts*
-after the deadline; one already in flight may finish up to `read_timeout_seconds` later -- the
-documented worst-case overrun. Each poll is bounded by `read_timeout_seconds` individually.
+deterministically; production defaults to `anyio.current_time`/`anyio.sleep`). No poll starts
+at or after the deadline. Connect, handshake and read are bounded by the smaller of
+`read_timeout_seconds` and the remaining verification budget; sleep is clamped to that budget
+too. A result arriving at or after the deadline is discarded and escalates the action.
 
 Each result is turned into an observation mapping by `observation_from_result()`: an MCP *error*
 result is never an observation, even if it carries structured content -- it counts as a failed
@@ -484,11 +494,12 @@ Every obtained observation is evaluated with `newton_mcp.action.conditions.evalu
 `verification.condition`:
 
 - Satisfied -> `VERIFYING -> SUCCEEDED`, polling stops.
-- The deadline is reached with **at least one** observation, never satisfied -> `VERIFYING ->
-  FAILED` -- a *verified* failure, the only kind `lifecycle.py`'s `FAILED` state means.
-- The deadline is reached with **zero** observations -> `VERIFYING -> ESCALATED`, never `FAILED`.
-  Calling an unobservable world a verified failure would license a retry on no evidence at all;
-  `FAILED` stays honest because it is always reachable with at least one observation behind it.
+- The deadline is reached and the **latest poll** gave a known negative condition result ->
+  `VERIFYING -> FAILED`, a verified failure.
+- The latest poll failed, lacked required data, gave incompatible/non-finite values, or arrived
+  too late -> `VERIFYING -> ESCALATED`. Earlier negative evidence never licenses a retry after
+  observation is lost. A later usable observation can restore the ability to decide success or
+  failure. Zero observations also escalates.
 
 ## Adding an MCP actuator by configuration only
 

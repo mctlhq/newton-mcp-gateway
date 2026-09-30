@@ -82,7 +82,7 @@ obtains real observations (never zero), never satisfies the condition, and the r
 ```
 terminal state: ESCALATED
 actuator tool calls: 2
-read polls: 22
+read polls: 20
 ```
 
 `actuator tool calls` counts only calls to the action tool (`set_ac_temperature`): the first

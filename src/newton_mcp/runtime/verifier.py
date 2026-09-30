@@ -6,9 +6,9 @@ capability's `read_tool` -- never the action tool -- evaluates the
 contract's structured `verification.condition`
 (`newton_mcp.action.conditions.evaluate`) against each observation, and
 ends in exactly one of `SUCCEEDED`, `FAILED` (a *verified* failure, only
-reachable with at least one obtained observation) or `ESCALATED` (nothing
-could be observed at all -- calling that a verified failure would license a
-retry on no evidence).
+reachable with a known negative result from the latest poll) or `ESCALATED`
+(the latest poll could not establish the outcome -- calling that a verified
+failure would license a retry on no evidence).
 """
 
 from __future__ import annotations
@@ -113,6 +113,8 @@ class Verifier:
         *,
         now: datetime,
     ) -> tuple[ActionRecord, VerificationOutcome]:
+        candidate = candidate.model_copy(deep=True)
+        contract = contract.model_copy(deep=True)
         record = transition(
             record,
             ActionState.VERIFYING,
@@ -136,19 +138,30 @@ class Verifier:
         if entry.read_tool.read_only_hint is None:
             hint_note = " (read_tool has no read_only_hint annotation; allowed)"
 
-        server = entry.server
+        server = entry.server.model_copy(deep=True)
         deadline = self._clock() + contract.verification.timeout_seconds
         observations = 0
+        latest_known = False
 
         while True:
-            if self._clock() > deadline:
+            remaining = deadline - self._clock()
+            if remaining <= 0:
                 break
 
-            observation = await self._poll(server, candidate)
+            observation = await self._poll(server, candidate, timeout_seconds=remaining)
+            # A transport may finish after cancellation or an injected clock
+            # may advance during the read: late evidence cannot prove an
+            # outcome within the contract's verification window.
+            if self._clock() >= deadline:
+                latest_known = False
+                break
+
+            latest_known = False
             if observation is not None:
                 observations += 1
                 result = evaluate(contract.verification.condition, observation)
-                if result.satisfied:
+                latest_known = result.known
+                if result.known and result.satisfied:
                     reason = f"{result.reason}{hint_note}"
                     record = transition(
                         record, ActionState.SUCCEEDED, reason, now=now, sink=self._sink,
@@ -158,16 +171,17 @@ class Verifier:
                         state=ActionState.SUCCEEDED, observations=observations, reason=reason
                     )
 
-            if self._clock() >= deadline:
+            remaining = deadline - self._clock()
+            if remaining <= 0:
                 break
-            await self._sleep(self._poll_interval_seconds)
+            await self._sleep(min(self._poll_interval_seconds, remaining))
 
-        if observations == 0:
-            reason = f"no observation could be obtained before the deadline{hint_note}"
+        if not latest_known:
+            reason = f"latest poll did not establish the outcome before the deadline{hint_note}"
             record = transition(
                 record, ActionState.ESCALATED, reason, now=now, sink=self._sink, id_factory=self._id_factory,
             )
-            return record, VerificationOutcome(state=ActionState.ESCALATED, observations=0, reason=reason)
+            return record, VerificationOutcome(state=ActionState.ESCALATED, observations=observations, reason=reason)
 
         reason = f"condition never satisfied by the deadline after {observations} observation(s){hint_note}"
         record = transition(
@@ -175,10 +189,12 @@ class Verifier:
         )
         return record, VerificationOutcome(state=ActionState.FAILED, observations=observations, reason=reason)
 
-    async def _poll(self, server: ServerConfig, candidate: CandidateAction) -> Mapping[str, Any] | None:
+    async def _poll(
+        self, server: ServerConfig, candidate: CandidateAction, *, timeout_seconds: float,
+    ) -> Mapping[str, Any] | None:
         assert candidate.read_tool is not None
         try:
-            with anyio.fail_after(self._read_timeout_seconds):
+            with anyio.fail_after(min(self._read_timeout_seconds, timeout_seconds)):
                 async with self._client_factory(server) as client:
                     raw_result = await client.call_tool(candidate.read_tool, candidate.read_args)
         except Exception:

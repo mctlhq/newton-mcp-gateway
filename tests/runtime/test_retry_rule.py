@@ -599,3 +599,69 @@ async def test_terminal_escalation_lands_in_the_shared_sink() -> None:
         ("verifying", "failed"),
         ("failed", "escalated"),
     ]
+
+
+@pytest.mark.parametrize("initial_negative", [False, True])
+@pytest.mark.parametrize("lost_observation", ["error", "empty", "wrong-type", "non-finite"])
+async def test_lost_observability_after_negative_read_never_retries(lost_observation, initial_negative) -> None:
+    action_log: list[str] = []
+    reads = 0
+
+    async def read() -> dict:
+        nonlocal reads
+        reads += 1
+        if reads == 1 and initial_negative:
+            return {"temperature_c": 30}
+        if lost_observation == "error":
+            raise RuntimeError("sensor offline")
+        if lost_observation == "empty":
+            return {}
+        if lost_observation == "non-finite":
+            return {"temperature_c": float("nan")}
+        return {"temperature_c": "unavailable"}
+
+    catalog, fake = await _build(_action_call_counter(action_log), read, idempotent=True)
+    sink = MemoryAuditSink()
+    clock = DeterministicClock()
+    executor = Executor(catalog, client_factory=in_memory_factory({"hvac": fake}), sink=sink)
+    verifier = Verifier(
+        catalog, client_factory=in_memory_factory({"hvac": fake}), sink=sink,
+        poll_interval_seconds=0.25, clock=clock.clock, sleep=clock.sleep,
+    )
+    candidate = _candidate(idempotent=True)
+    record = _authorized_record()
+    _, state = await run_action(
+        candidate, _contract(retry_limit=1), record, approval=_approval(candidate, record),
+        policy_version="policy.v1", executor=executor, verifier=verifier, now_fn=lambda: NOW,
+    )
+    assert state is ActionState.ESCALATED
+    assert action_log == ["call"]
+    assert "failed" not in [event.to_state for event in sink.events]
+
+
+async def test_caller_cannot_change_retry_budget_during_execution() -> None:
+    contract = _contract(retry_limit=0)
+    calls = []
+
+    async def action() -> dict:
+        calls.append("call")
+        contract.verification.retry_limit = 5
+        return {}
+
+    async def read() -> dict:
+        return {"temperature_c": 30}
+
+    catalog, fake = await _build(action, read, idempotent=True)
+    clock = DeterministicClock()
+    sink = MemoryAuditSink()
+    factory = in_memory_factory({"hvac": fake})
+    executor = Executor(catalog, client_factory=factory, sink=sink)
+    verifier = Verifier(catalog, client_factory=factory, sink=sink, clock=clock.clock, sleep=clock.sleep)
+    candidate = _candidate(idempotent=True)
+    record = _authorized_record()
+    await run_action(
+        candidate, contract, record, approval=_approval(candidate, record), policy_version="policy.v1",
+        executor=executor, verifier=verifier, now_fn=lambda: NOW,
+    )
+    assert calls == ["call"]
+    assert contract.verification.retry_limit == 5

@@ -46,7 +46,7 @@ read, not five modules.
 | `DEFAULT_SERVER_TIMEOUT_SECONDS` | `10.0` | `src/newton_mcp/runtime/catalog.py` -- bounds one server's whole discovery cycle (connect, handshake, every `list_tools` page). |
 | `DEFAULT_CALL_TIMEOUT_SECONDS` | `30.0` | `src/newton_mcp/runtime/executor.py` -- bounds one tool-call attempt (connect, handshake, the call). |
 | `DEFAULT_POLL_INTERVAL_SECONDS` | `5.0` | `src/newton_mcp/runtime/verifier.py` -- the wait between verifier polls. |
-| `DEFAULT_READ_TIMEOUT_SECONDS` | `10.0` | `src/newton_mcp/runtime/verifier.py` -- bounds one poll of the `read_tool`; also the documented worst-case deadline overrun (see Invariants, below). |
+| `DEFAULT_READ_TIMEOUT_SECONDS` | `10.0` | `src/newton_mcp/runtime/verifier.py` -- bounds one poll of the `read_tool`, further limited by the remaining contract deadline. |
 | `MAX_CONDITION_DEPTH` | `8` | `src/newton_mcp/action/conditions.py` -- caps `all`/`any` nesting depth on a `Condition`. |
 | `MAX_TOOL_PAGES` | `1000` | `src/newton_mcp/runtime/catalog.py` -- caps `list_tools` pagination per server. |
 | `_MAX_VALUE_CHARS` | `500` | `src/newton_mcp/runtime/audit.py` -- truncates a surviving (non-redacted) string value before it is written to the audit log. |
@@ -107,10 +107,11 @@ is meant to prevent.
   contract.verification.retry_limit` (`src/newton_mcp/runtime/executor.py`); otherwise it escalates
   with no further tool call. Prevents a non-idempotent action (e.g. `announce`) from ever being
   re-sent.
-- **Zero observations escalate; they are never reported as a verified failure.** The verifier
-  distinguishes "the deadline passed with at least one observation, never satisfied" (`FAILED`)
-  from "the deadline passed with zero observations" (`ESCALATED`) (`Verifier.verify()`). Prevents
-  an unobservable world -- which proves nothing -- from licensing a retry on no evidence at all.
+- **Unknown latest evidence escalates; it is never a verified failure.** A failed latest poll,
+  a missing condition path, incompatible types or non-finite values produce `ESCALATED`, even
+  after earlier negative observations. Only a known negative result from the latest poll can
+  produce `FAILED` (`Verifier.verify()`). A later usable observation restores observability;
+  zero observations also escalates.
 - **The verifier refuses to call a tool the server marks as not read-only.** `read_only_hint is
   False` on the discovered `read_tool` always escalates without a call
   (`Verifier._unverifiable_reason()`); an unannotated (`None`) hint is allowed and the fact is
@@ -166,9 +167,10 @@ omitted:
   short-lived approvals but means the two cases are indistinguishable from the fingerprint alone.
 - **The gateway ships no authentication.** The container binds `0.0.0.0` by default (see
   `README.md`); exposing it to an untrusted network is the operator's responsibility.
-- **The verifier's documented worst-case deadline overrun is one in-flight poll.** No new poll
-  *starts* after `contract.verification.timeout_seconds` elapses, but a poll already in flight may
-  finish up to `read_timeout_seconds` (default `10.0`) later (`Verifier.verify()`).
+- **Cancellation is cooperative.** Read operations receive at most the remaining contract
+  deadline, and sleep is clamped to that same budget. A transport that ignores cancellation
+  can delay returning control; any result received at or after the deadline is discarded,
+  never reported as success (`Verifier.verify()`).
 - **`announce` has no `read_tool` and is therefore never verifiable.** Any run through it always
   ends `ESCALATED` after exactly one call, confirm-gated but unverified by design (see
   `examples/smart-home/README.md`).

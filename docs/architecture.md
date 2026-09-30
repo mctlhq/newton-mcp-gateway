@@ -62,7 +62,9 @@ anything happened at all. The retry rule this proposal implements (`newton_mcp.r
 a non-idempotent action whose outcome is unknown.** Concretely: an `EXECUTING -> EXECUTED` or
 `EXECUTING -> UNKNOWN` outcome is always verified through the capability's `read_tool` before any
 retry decision is made; a verified failure only retries when the capability is `idempotent` and
-the contract's `retry_limit` has not been exhausted; everything else escalates to a human. See
+the contract's `retry_limit` has not been exhausted; everything else escalates to a human. A failed or unreadable latest poll escalates even after
+an earlier negative reading; stale evidence never licenses a retry. Reads and sleeps consume
+the remaining verification deadline, and late results are discarded. See
 `docs/action-runtime.md` for the full executor/verifier behaviour.
 
 ## Safety defaults
