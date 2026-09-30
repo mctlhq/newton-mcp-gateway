@@ -2,11 +2,19 @@ from __future__ import annotations
 
 import anyio
 import pytest
+from mcp import Client, StdioServerParameters
 from mcp.types import ToolAnnotations
 from mcp_types import Tool
 
-from newton_mcp.runtime.catalog import CapabilityCatalog, CatalogSnapshot
-from newton_mcp.runtime.config import CapabilityConfig, RuntimeConfig, ServerConfig, StdioTransport, TargetMatch
+from newton_mcp.runtime.catalog import CapabilityCatalog, CatalogSnapshot, default_client_factory
+from newton_mcp.runtime.config import (
+    CapabilityConfig,
+    HttpTransport,
+    RuntimeConfig,
+    ServerConfig,
+    StdioTransport,
+    TargetMatch,
+)
 
 from .conftest import (
     FakeToolSpec,
@@ -340,3 +348,45 @@ async def test_refresh_never_calls_call_tool() -> None:
 
     assert CALL_FLAGS.get("set_target_temperature") is not True
     assert CALL_FLAGS.get("get_room_temperature") is not True
+
+
+# ---------------------------------------------------------------------------
+# T12: default_client_factory's unchanged branches (issue-28 collateral-damage guard)
+# ---------------------------------------------------------------------------
+
+
+def test_default_client_factory_http_without_auth_returns_plain_client() -> None:
+    server = ServerConfig(
+        name="home-bridge", transport=HttpTransport(kind="streamable-http", url="https://home-bridge.local/mcp")
+    )
+    client = default_client_factory(server)
+    assert isinstance(client, Client)
+    assert client.server == "https://home-bridge.local/mcp"
+
+
+def test_default_client_factory_stdio_still_builds_stdio_server_parameters() -> None:
+    server = ServerConfig(
+        name="hvac", transport=StdioTransport(kind="stdio", command="hvac-server", args=("--flag",), env={"A": "1"})
+    )
+    client = default_client_factory(server)
+    assert isinstance(client, Client)
+    assert isinstance(client.server, StdioServerParameters)
+    assert client.server.command == "hvac-server"
+    assert client.server.args == ["--flag"]
+    assert client.server.env == {"A": "1"}
+
+
+# ---------------------------------------------------------------------------
+# T13: SDK-surface guard for `create_mcp_http_client`
+# ---------------------------------------------------------------------------
+
+
+async def test_create_mcp_http_client_surface_still_accepts_headers() -> None:
+    """A future `mcp` bump that moves/changes this helper fails here, with an obvious cause."""
+    from mcp.shared._httpx_utils import create_mcp_http_client
+
+    client = create_mcp_http_client(headers={"X-Test": "y"})
+    try:
+        assert client.headers["X-Test"] == "y"
+    finally:
+        await client.aclose()

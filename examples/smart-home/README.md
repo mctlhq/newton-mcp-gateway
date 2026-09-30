@@ -149,7 +149,11 @@ checked at owner review:
 - Its `alice_get_device_state` tool returns Markdown **text only** -- no `structuredContent` --
   so every poll through this runtime's verifier would be "no observation" and every run would end
   `ESCALATED`, never a genuine verification.
-- It sits behind **OAuth**, and `HttpTransport` in `runtime/config.py` has no auth-header support.
+- It sits behind **OAuth**. `HttpTransport` in `runtime/config.py` now supports a static bearer
+  (or other single-header) credential resolved from an environment variable (mock-validated only;
+  see `docs/action-runtime.md`'s "Authenticated streamable-http"), but Alice's own OAuth
+  authorization-code flow is a separate, larger piece of work this does not attempt
+  (`mctlhq/newton-mcp-gateway#28`).
 - It addresses devices by **`device` id**, not by room, which does not match this testbed's
   `target.location`-based capability shape.
 

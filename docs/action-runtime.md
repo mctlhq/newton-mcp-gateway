@@ -44,6 +44,15 @@ servers:
       args: ["--config", "/etc/hvac-mcp-server/config.yaml"]
     # identity: hvac-controller   # optional; defaults to `name`
 
+  - name: home-bridge
+    transport:
+      kind: streamable-http
+      url: https://home-bridge.local/mcp
+      # auth:                       # optional; only for streamable-http. See
+      #   header: Authorization     # "Authenticated streamable-http" below.
+      #   scheme: Bearer            # omit to send the raw value instead
+      #   env: ALICE_MCP_TOKEN      # the *name* of an env var; never a literal value here
+
 capabilities:
   - server: hvac-controller
     tool: set_target_temperature
@@ -119,7 +128,13 @@ that gap: it is `f"{resolved_identity}@sha256:{transport_fingerprint}"`, where
   query and fragment stay byte-exact -- two URLs that differ only in userinfo fingerprint
   differently. Nothing else is normalised, so percent-encoding and trailing-slash differences
   also fingerprint differently: the failure mode is a spuriously invalidated approval, never a
-  spuriously valid one.
+  spuriously valid one. When the server declares `auth` (see "Authenticated streamable-http"
+  below), the digest gains a third key: `"auth": {"header": ..., "scheme": ..., "env": ...}` --
+  the header *name*, the scheme, and the environment variable's *name*, never its value, which
+  is never read while computing a fingerprint. Rotating only the variable's value therefore
+  leaves `binding_identity` (and so every outstanding approval) unchanged; changing the `env`
+  name, the `header`, or the `scheme` changes it, exactly like changing `url` does. A server
+  with no `auth` block produces the same two-key dict as before this existed.
 - `stdio`: `{"kind": "stdio", "command": ..., "args": [...], "env": {...}}`, with `command`,
   `args`, and the **full `env` mapping (names and values)** byte-exact -- no `PATH` lookup, no
   filesystem resolution. A stdio server's target is often configured through `env` (e.g.
@@ -132,6 +147,59 @@ that gap: it is `f"{resolved_identity}@sha256:{transport_fingerprint}"`, where
 `server_identity` label. Changing a server's `url`, `command`, `args`, or any `env` name or value
 under an unchanged `name`/`identity` therefore invalidates every approval issued before the
 change.
+
+### Authenticated streamable-http
+
+**Mock-validated only** -- see the honesty note at the top of this document. A `streamable-http`
+server may declare a single static auth header:
+
+```yaml
+transport:
+  kind: streamable-http
+  url: https://home-bridge.local/mcp
+  auth:
+    header: Authorization    # any valid HTTP field name, but not one the SDK manages itself
+                              # (content-type, accept, mcp-session-id, mcp-protocol-version)
+    scheme: Bearer            # optional; omit to send the variable's raw value as the whole header
+    env: ALICE_MCP_TOKEN      # the *name* of an environment variable -- never a literal value
+```
+
+`HttpTransport.auth` is loaded by `newton_mcp.runtime.config.HttpAuth`. The value itself is never
+written to `runtime.yaml`, never stored on any model, and never read while loading or
+fingerprinting the config -- only `newton_mcp.runtime.auth.resolve_auth_header()` reads it, at
+connect time, inside `default_client_factory()`. A raw literal secret under any other key (for
+example `auth: {header: Authorization, value: "..."}`) is rejected at load time with
+`newton_mcp.runtime.config.AuthConfigError`, which is deliberately **not** a `ValueError`: a
+`ValueError`/`AssertionError` raised from inside a Pydantic validator is wrapped into a
+`ValidationError` whose rendered message echoes the rejected input, which would print the secret
+right back out. `AuthConfigError`'s message names only fixed field paths and, at most, a
+validated header/env-var/server name -- never a rejected value. The same screen fires for `auth`
+on a `stdio` transport (unsupported; stdio already passes credentials through its own `env` map)
+and for an unrecognised transport `kind`, both before Pydantic's own machinery gets a chance to
+build an error around the raw block.
+
+**Rotation vs. re-pointing.** Because only the header name, scheme and env-var *name* enter the
+fingerprint (see above), rotating the credential -- changing what `ALICE_MCP_TOKEN` is set to --
+never invalidates an outstanding approval; the runtime resolves the header value fresh on every
+connect. Re-pointing `env:` at a different variable, or changing `header`/`scheme`, changes
+`binding_identity` exactly like changing `url` does, so `Executor._resolve_server()` refuses to
+call a candidate resolved before that change.
+
+**Failure is loud, not silent.** If the named variable is unset or blank at connect time,
+`resolve_auth_header()` raises `MissingAuthSecret` naming the variable and the server -- no
+transport is opened and the runtime never connects unauthenticated. During
+`CapabilityCatalog.refresh()` this becomes one `server_unavailable` `CatalogProblem` for that
+server (naming the same variable), while every other configured server is still discovered.
+Any other transport failure for an authenticated server is recorded as a safe, class-only
+diagnostic (`"transport failure (<ExceptionClassName>)"`), never the raw exception text --
+an httpx2/anyio error can embed request state, and the resolved header travelled on that exact
+request.
+
+**Non-goals.** This is a single static header, resolved once per connect -- not an OAuth 2.1
+client. There is no token store, no refresh flow, no discovery, no dynamic client registration,
+and no support for the real `mctlhq/mctl-alice` server's OAuth authorization-code flow (see
+`examples/smart-home/README.md`). `mcp>=2.2` ships an OAuth client under `mcp/client/auth/` for
+that; it is out of scope here.
 
 ## The resolver: deterministic, synchronous, explainable
 
@@ -551,6 +619,13 @@ Point the process at both files, plus (optionally) an audit trail, then refresh 
 export NEWTON_MCP_RUNTIME_CONFIG=/path/to/runtime.yaml
 export NEWTON_MCP_POLICY_PATH=/path/to/policy.yaml
 export NEWTON_MCP_AUDIT_PATH=/path/to/action-audit.jsonl   # optional; unset means in-memory only
+```
+
+If `home-bridge` sits behind auth, add an `auth` block to its transport (see "Authenticated
+streamable-http" above) and export the one extra variable it names, e.g.:
+
+```bash
+export ALICE_MCP_TOKEN=...   # only if runtime.yaml declares transport.auth.env: ALICE_MCP_TOKEN
 ```
 
 `CapabilityCatalog.refresh()` (or a process restart) picks up the new server and capability on
