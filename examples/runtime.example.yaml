@@ -19,6 +19,13 @@ servers:
     transport:
       kind: streamable-http
       url: https://home-bridge.local/mcp
+      # If home-bridge sits behind auth, declare a static header here -- the
+      # *value* comes from a named environment variable, never from this file.
+      # See "Authenticated streamable-http" in docs/action-runtime.md.
+      # auth:
+      #   header: Authorization
+      #   scheme: Bearer
+      #   env: ALICE_MCP_TOKEN
 
 capabilities:
   - server: hvac-controller
