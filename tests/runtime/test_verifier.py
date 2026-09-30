@@ -2,6 +2,9 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
+import anyio
+import pytest
+
 from mcp.types import ToolAnnotations
 
 from newton_mcp.action.contract import PhysicalActionContract, Risk, Target, Verification
@@ -402,9 +405,9 @@ async def test_polls_start_at_t0_and_none_starts_after_the_deadline(deterministi
         _candidate(), _contract(timeout_seconds=20), _executing_record(), now=NOW
     )
 
-    assert poll_times == [0, 5, 10, 15, 20]
+    assert poll_times == [0, 5, 10, 15]
     assert outcome.state is ActionState.FAILED
-    assert outcome.observations == 5
+    assert outcome.observations == 4
     assert record.state is ActionState.FAILED
 
 
@@ -434,3 +437,131 @@ async def test_re_pointed_server_is_never_verified_against(deterministic_clock) 
     assert outcome.observations == 0
     assert read_log == []
     assert "re-pointed" in outcome.reason
+
+
+@pytest.mark.parametrize("recovered", [{"temperature_c": 30}, {"temperature_c": 23}])
+async def test_recovered_observability_can_fail_or_succeed(deterministic_clock, recovered) -> None:
+    reads = 0
+
+    async def read() -> dict:
+        nonlocal reads
+        reads += 1
+        if reads == 1:
+            raise RuntimeError("offline")
+        return recovered
+
+    catalog = await _catalog_for([FakeToolSpec("get_room_temperature", read)], _capability())
+    fake = build_fake_server("hvac", [FakeToolSpec("get_room_temperature", read)])
+    verifier = Verifier(
+        catalog, client_factory=in_memory_factory({"hvac": fake}),
+        clock=deterministic_clock.clock, sleep=deterministic_clock.sleep, poll_interval_seconds=0.25,
+    )
+    _, outcome = await verifier.verify(_candidate(), _contract(timeout_seconds=1), _executing_record(), now=NOW)
+    expected = ActionState.SUCCEEDED if recovered["temperature_c"] == 23 else ActionState.FAILED
+    assert outcome.state is expected
+
+
+async def test_late_positive_read_cannot_succeed(deterministic_clock) -> None:
+    from contextlib import asynccontextmanager
+
+    async def read() -> dict:
+        return {"temperature_c": 23}
+
+    catalog = await _catalog_for([FakeToolSpec("get_room_temperature", read)], _capability())
+
+    class Client:
+        async def call_tool(self, name, arguments):
+            deterministic_clock.now += 2
+            return _FakeResult(structured_content={"temperature_c": 23})
+
+    @asynccontextmanager
+    async def factory(_server):
+        yield Client()
+
+    verifier = Verifier(catalog, client_factory=factory, clock=deterministic_clock.clock, sleep=deterministic_clock.sleep)
+    _, outcome = await verifier.verify(_candidate(), _contract(timeout_seconds=1), _executing_record(), now=NOW)
+    assert outcome.state is ActionState.ESCALATED
+    assert outcome.observations == 0
+
+
+async def test_sleep_is_clamped_and_no_poll_starts_at_deadline(deterministic_clock) -> None:
+    async def read() -> dict:
+        return {"temperature_c": 30}
+
+    catalog = await _catalog_for([FakeToolSpec("get_room_temperature", read)], _capability())
+    fake = build_fake_server("hvac", [FakeToolSpec("get_room_temperature", read)])
+    verifier = Verifier(
+        catalog, client_factory=in_memory_factory({"hvac": fake}),
+        clock=deterministic_clock.clock, sleep=deterministic_clock.sleep, poll_interval_seconds=1000,
+    )
+    _, outcome = await verifier.verify(_candidate(), _contract(timeout_seconds=1), _executing_record(), now=NOW)
+    assert deterministic_clock.now == 1
+    assert outcome.state is ActionState.FAILED
+    assert outcome.observations == 1
+
+
+@pytest.mark.parametrize("hang_on_connect", [False, True])
+async def test_inflight_read_is_cancelled_at_contract_deadline(hang_on_connect) -> None:
+    from contextlib import asynccontextmanager
+
+    async def read() -> dict:
+        return {"temperature_c": 23}
+
+    catalog = await _catalog_for([FakeToolSpec("get_room_temperature", read)], _capability())
+    cancelled = []
+
+    class Client:
+        async def call_tool(self, name, arguments):
+            try:
+                await anyio.sleep_forever()
+            finally:
+                cancelled.append(True)
+
+    @asynccontextmanager
+    async def factory(_server):
+        if hang_on_connect:
+            try:
+                await anyio.sleep_forever()
+            finally:
+                cancelled.append(True)
+        yield Client()
+
+    verifier = Verifier(catalog, client_factory=factory, read_timeout_seconds=100)
+    started = anyio.current_time()
+    with anyio.fail_after(2):
+        _, outcome = await verifier.verify(_candidate(), _contract(timeout_seconds=1), _executing_record(), now=NOW)
+    assert anyio.current_time() - started < 2
+    assert cancelled == [True]
+    assert outcome.state is ActionState.ESCALATED
+    assert outcome.observations == 0
+
+
+async def test_read_context_is_snapshotted_before_awaiting_connect(deterministic_clock) -> None:
+    from contextlib import asynccontextmanager
+
+    async def read() -> dict:
+        return {"temperature_c": 30}
+
+    catalog = await _catalog_for([FakeToolSpec("get_room_temperature", read)], _capability())
+    candidate = _candidate()
+    contract = _contract(timeout_seconds=1)
+    sent = []
+
+    class Client:
+        async def call_tool(self, name, arguments):
+            sent.append(dict(arguments))
+            return _FakeResult(structured_content={"temperature_c": 30})
+
+    @asynccontextmanager
+    async def factory(_server):
+        candidate.read_args["location"] = "other-room"
+        contract.verification.condition = _contract().verification.condition.model_copy(update={"value": 99})
+        yield Client()
+
+    verifier = Verifier(
+        catalog, client_factory=factory, clock=deterministic_clock.clock,
+        sleep=deterministic_clock.sleep, poll_interval_seconds=1000,
+    )
+    _, outcome = await verifier.verify(candidate, contract, _executing_record(), now=NOW)
+    assert sent == [{"location": "kitchen"}]
+    assert outcome.state is ActionState.FAILED

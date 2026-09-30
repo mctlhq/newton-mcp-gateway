@@ -121,7 +121,11 @@ class Executor:
             ApprovalRejected: `verify_approval()` failed for this attempt --
                 before any transition, audit line or transport.
         """
-        server = self._resolve_server(candidate)
+        # Pydantic frozen models do not freeze nested dicts/lists. Capture
+        # one private snapshot before approval verification or any await so
+        # a concurrent caller cannot change what is audited and sent.
+        candidate = candidate.model_copy(deep=True)
+        server = self._resolve_server(candidate).model_copy(deep=True)
 
         check = verify_approval(approval, candidate, record.action_id, policy_version, now)
         if not check.valid:
@@ -237,6 +241,10 @@ async def run_action(
         ApprovalRejected: the approval failed on the first attempt (the
             record is still `AUTHORIZED`; nothing was called).
     """
+    # Keep every attempt and verification on the same caller-independent
+    # context, including nested read args and the verification condition.
+    candidate = candidate.model_copy(deep=True)
+    contract = contract.model_copy(deep=True)
     if executor.sink is not verifier.sink:
         raise ValueError(
             "run_action: executor and verifier must share one audit sink so every transition "

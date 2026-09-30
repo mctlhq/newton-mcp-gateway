@@ -329,3 +329,46 @@ async def test_transport_error_message_is_not_persisted(tmp_path, factory) -> No
         candidate, fresh, approval=_approval(candidate, fresh), policy_version="policy.v1", now=NOW
     )
     assert SENTINEL not in audit_path.read_text()
+
+
+async def test_concurrent_nested_args_mutation_cannot_change_approved_call() -> None:
+    from contextlib import asynccontextmanager
+    from copy import deepcopy
+
+    server = _server()
+    candidate = _candidate(server, args={"settings": {"temperature_c": 23}})
+    record = _authorized_record()
+    approval = _approval(candidate, record)
+    connecting = anyio.Event()
+    proceed = anyio.Event()
+    sent = []
+    commands = []
+
+    class Client:
+        async def call_tool(self, name, arguments):
+            sent.append(deepcopy(arguments))
+            return {}
+
+    @asynccontextmanager
+    async def factory(_server):
+        connecting.set()
+        await proceed.wait()
+        commands.append(_server.transport.command)
+        yield Client()
+
+    async def mutate():
+        await connecting.wait()
+        candidate.args["settings"]["temperature_c"] = 99
+        server.transport.command = "repointed-cmd"
+        proceed.set()
+
+    sink = MemoryAuditSink()
+    executor = Executor(_catalog(server), client_factory=factory, sink=sink)
+    async with anyio.create_task_group() as group:
+        group.start_soon(mutate)
+        await executor.execute(candidate, record, approval=approval, policy_version="policy.v1", now=NOW)
+    assert commands == ["hvac-cmd"]
+    assert sent == [{"settings": {"temperature_c": 23}}]
+    assert sink.events[0].args == sent[0]
+    assert sink.events[0].args_digest == approval.args_digest
+    assert candidate.args["settings"]["temperature_c"] == 99

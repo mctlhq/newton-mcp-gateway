@@ -214,7 +214,7 @@ uv run python examples/smart-home/demo.py --mock --ac-offline
 ...
 terminal state: ESCALATED
 actuator tool calls: 2
-read polls: 22
+read polls: 20
 ```
 
 The two actuator calls are the first attempt and the one retry allowed by the mock contract's

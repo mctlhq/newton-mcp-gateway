@@ -96,7 +96,7 @@ def test_t1_mock_run_succeeds_with_one_ac_call_and_four_ids(demo: ModuleType, tm
     read_polls = [entry for entry in call_log if entry[0] == "get_room_state"]
     assert len(ac_calls) == 1
     assert result.tool_call_count == 1
-    assert result.read_poll_count == len(read_polls) >= 1
+    assert result.read_poll_count == len(read_polls) == 3
     assert result.tool_call_count + result.read_poll_count == len(call_log)
     assert result.observation_id and result.action_id and result.tool_call_id and result.verification_id
 
@@ -133,7 +133,7 @@ def test_t3_ac_offline_escalates_with_at_least_one_observation_and_bounded_calls
     # idempotent, so exactly retry_limit + 1 == 2 actuator calls, never counted as read polls.
     assert len(ac_calls) == 2
     assert result.tool_call_count == 2
-    assert result.read_poll_count == len(read_polls) >= 2
+    assert result.read_poll_count == len(read_polls) == 20
     # A verification poll separates the two actuator calls.
     first, second = [i for i, entry in enumerate(call_log) if entry[0] == "set_ac_temperature"]
     assert any(entry[0] == "get_room_state" for entry in call_log[first + 1 : second])

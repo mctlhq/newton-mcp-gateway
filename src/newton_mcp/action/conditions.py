@@ -16,6 +16,7 @@ contract model, and `action/` must never import `runtime/` (see
 
 from __future__ import annotations
 
+import math
 import operator
 from collections.abc import Mapping
 from enum import StrEnum
@@ -141,12 +142,13 @@ AnyOf.model_rebuild()
 
 
 class ConditionResult(BaseModel):
-    """The result of `evaluate()`: a `satisfied` boolean and a non-empty `reason`."""
+    """A comparison result; `known=False` means evidence could not be evaluated."""
 
     model_config = ConfigDict(frozen=True)
 
     satisfied: bool
     reason: str
+    known: bool = True
 
 
 def resolve_path(path: str, observation: Mapping[str, Any]) -> tuple[bool, Any]:
@@ -214,6 +216,7 @@ def _evaluate_predicate(predicate: Predicate, observation: Mapping[str, Any]) ->
     if not found:
         return ConditionResult(
             satisfied=False,
+            known=False,
             reason=f"path {predicate.path!r} not found in observation (op={op.value}, expected value={expected!r})",
         )
 
@@ -224,9 +227,16 @@ def _evaluate_predicate(predicate: Predicate, observation: Mapping[str, Any]) ->
     )
     observed_type = _type_name(observed)
 
+    if any(isinstance(value, float) and not math.isfinite(value) for value in (observed, expected)):
+        return ConditionResult(
+            satisfied=False, known=False,
+            reason=f"path {predicate.path!r} has non-finite comparison operands (op={op.value})",
+        )
+
     if not comparable:
         return ConditionResult(
             satisfied=False,
+            known=False,
             reason=(
                 f"path {predicate.path!r} type mismatch: observed value has type {observed_type}, "
                 f"not comparable under op={op.value} against expected value {expected!r}"
@@ -254,20 +264,28 @@ def evaluate(condition: "Condition", observation: Mapping[str, Any]) -> Conditio
     if isinstance(condition, Predicate):
         return _evaluate_predicate(condition, observation)
 
+    children = condition.all if isinstance(condition, AllOf) else condition.any
+    results = [evaluate(child, observation) for child in children]
+    unknown = next((result for result in results if not result.known), None)
+
     if isinstance(condition, AllOf):
-        for child in condition.all:
-            result = evaluate(child, observation)
-            if not result.satisfied:
-                return ConditionResult(satisfied=False, reason=f"all: {result.reason}")
+        # An unreadable child is never reported as a proven negative, even
+        # when a different child currently compares false.
+        if unknown is not None:
+            return ConditionResult(satisfied=False, known=False, reason=f"all: {unknown.reason}")
+        negative = next((result for result in results if not result.satisfied), None)
+        if negative is not None:
+            return ConditionResult(satisfied=False, reason=f"all: {negative.reason}")
         return ConditionResult(satisfied=True, reason="all: every child condition was satisfied")
 
     if isinstance(condition, AnyOf):
-        last_reason = "any: no child conditions"
-        for child in condition.any:
-            result = evaluate(child, observation)
-            if result.satisfied:
-                return ConditionResult(satisfied=True, reason=f"any: {result.reason}")
-            last_reason = result.reason
-        return ConditionResult(satisfied=False, reason=f"any: no child condition was satisfied ({last_reason})")
+        positive = next((result for result in results if result.known and result.satisfied), None)
+        if positive is not None:
+            return ConditionResult(satisfied=True, reason=f"any: {positive.reason}")
+        if unknown is not None:
+            return ConditionResult(satisfied=False, known=False, reason=f"any: {unknown.reason}")
+        return ConditionResult(
+            satisfied=False, reason=f"any: no child condition was satisfied ({results[-1].reason})"
+        )
 
     raise TypeError(f"unknown condition type {type(condition)!r}")  # pragma: no cover - union is exhaustive

@@ -246,3 +246,28 @@ def test_no_io_or_eval_or_parser_in_module() -> None:
     assert "eval(" not in source
     assert "exec(" not in source
     assert "compile(" not in source
+
+
+@pytest.mark.parametrize("observation", [{}, {"a": "unavailable"}, {"a": float("nan")}, {"a": float("inf")}])
+def test_missing_or_invalid_data_is_explicitly_unknown(observation) -> None:
+    result = evaluate(_predicate("a", "le", 24), observation)
+    assert result.satisfied is False
+    assert result.known is False
+
+
+@pytest.mark.parametrize("key", ["all", "any"])
+@pytest.mark.parametrize("children_order", [False, True])
+def test_unknown_child_outranks_negative_composite_result(key, children_order) -> None:
+    children = [{"path": "a", "op": "eq", "value": 1}, {"path": "b", "op": "eq", "value": 2}]
+    if children_order:
+        children.reverse()
+    result = evaluate(_CONDITION.validate_python({key: children}), {"a": 9})
+    assert result.satisfied is False
+    assert result.known is False
+
+
+def test_any_positive_child_proves_success_despite_unknown_sibling() -> None:
+    condition = _CONDITION.validate_python({"any": [{"path": "a", "op": "eq", "value": 1}, {"path": "b", "op": "eq", "value": 2}]})
+    result = evaluate(condition, {"b": 2})
+    assert result.known is True
+    assert result.satisfied is True
