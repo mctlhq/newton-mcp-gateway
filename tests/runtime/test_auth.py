@@ -63,7 +63,7 @@ def test_missing_auth_secret_is_not_a_value_error() -> None:
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize("bad_char", ["\r", "\n", "\r\n", "\x00", "\x7f"])
+@pytest.mark.parametrize("bad_char", [chr(c) for c in range(0x20)] + ["\x7f"])
 def test_control_character_in_value_is_rejected_without_echo(bad_char: str) -> None:
     auth = HttpAuth(header="Authorization", scheme="Bearer", env="ALICE_MCP_TOKEN")
     poisoned = f"{_SENTINEL}{bad_char}evil"
@@ -74,9 +74,10 @@ def test_control_character_in_value_is_rejected_without_echo(bad_char: str) -> N
     assert "evil" not in message
 
 
-def test_unencodable_value_is_rejected_without_echo() -> None:
+@pytest.mark.parametrize("suffix", ["é", "☃"])
+def test_unencodable_value_is_rejected_without_echo(suffix: str) -> None:
     auth = HttpAuth(header="Authorization", scheme="Bearer", env="ALICE_MCP_TOKEN")
-    poisoned = f"{_SENTINEL}-☃"  # a snowman: not latin-1 encodable
+    poisoned = f"{_SENTINEL}-{suffix}"
     with pytest.raises(MissingAuthSecret) as excinfo:
         resolve_auth_header(auth, server_name="alice", env={"ALICE_MCP_TOKEN": poisoned})
     assert _SENTINEL not in str(excinfo.value)

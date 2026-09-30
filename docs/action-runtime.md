@@ -195,6 +195,19 @@ diagnostic (`"transport failure (<ExceptionClassName>)"`), never the raw excepti
 an httpx2/anyio error can embed request state, and the resolved header travelled on that exact
 request.
 
+The factory enforces this boundary for builder, connect, list, call and close failures,
+including nested exception groups: public exceptions and SDK logs carry only exception
+classes. A logging record factory applies this policy only during authenticated SDK
+operations (including their child tasks); caller-body exceptions and ordinary caller logs
+retain their behavior. Cancellation members are preserved. SDK and HTTP contexts are closed
+on success, failure and cancellation, and teardown cannot replace a caller-body exception.
+
+Header names, schemes and env names must match their complete token grammar, including at
+the final character. Nonblank credentials are preserved without trimming, but all C0
+controls and DEL, and values that the locked HTTP client's ASCII header encoder cannot
+encode, are rejected before creating a client. The SDK does not follow streamable-HTTP
+redirects; authenticated headers are never forwarded to a redirect destination.
+
 **Non-goals.** This is a single static header, resolved once per connect -- not an OAuth 2.1
 client. There is no token store, no refresh flow, no discovery, no dynamic client registration,
 and no support for the real `mctlhq/mctl-alice` server's OAuth authorization-code flow (see

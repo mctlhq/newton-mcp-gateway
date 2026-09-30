@@ -574,9 +574,10 @@ def test_auth_presence_changes_fingerprint_vs_no_auth() -> None:
 def test_changing_only_env_value_does_not_change_fingerprint(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("ALICE_MCP_TOKEN", "value-one")
     a = _http_server_with_auth()
+    before = a.transport_fingerprint
     monkeypatch.setenv("ALICE_MCP_TOKEN", "value-two")
     b = _http_server_with_auth()
-    assert a.transport_fingerprint == b.transport_fingerprint
+    assert before == a.transport_fingerprint == b.transport_fingerprint
 
 
 def test_fingerprint_computable_with_env_var_unset(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -598,3 +599,63 @@ def test_example_runtime_config_is_valid_and_safe() -> None:
                 f"capability {capability.server}/{capability.tool} looks unsafe: "
                 f"matched forbidden term {forbidden!r}"
             )
+
+
+@pytest.mark.parametrize("model,data", [
+    (RuntimeConfig, [{"auth": {"token": _SENTINEL}}]),
+    (RuntimeConfig, {"servers": {"auth": {"token": _SENTINEL}}}),
+    (RuntimeConfig, {"oops": {"auth": {"token": _SENTINEL}}}),
+    (HttpAuth, {"header": "Authorization", "env": "TOKEN", "value": _SENTINEL}),
+    (HttpAuth, {"header": _SENTINEL + "\n", "env": "TOKEN"}),
+    (ServerConfig, {"name": _SENTINEL, "transport": {"kind": "stdio", "auth": {"value": _SENTINEL}}}),
+])
+def test_malformed_auth_inputs_never_echo_secret(model, data) -> None:
+    with pytest.raises(Exception) as caught:
+        model.model_validate(data)
+    assert _SENTINEL not in str(caught.value)
+    assert _SENTINEL not in repr(caught.value)
+    assert _SENTINEL not in "".join(traceback.format_exception(caught.value))
+
+
+@pytest.mark.parametrize("field,value", [
+    ("header", "Authorization\n"), ("scheme", "Bearer\n"), ("env", "TOKEN\n"),
+])
+def test_auth_fields_reject_terminal_line_feed(field, value) -> None:
+    auth = {"header": "Authorization", "scheme": "Bearer", "env": "TOKEN"}
+    auth[field] = value
+    with pytest.raises(AuthConfigError):
+        HttpAuth.model_validate(auth)
+
+
+def test_validated_auth_model_can_be_used_in_transport() -> None:
+    auth = HttpAuth(header="Authorization", env="TOKEN")
+    transport = HttpTransport(kind="streamable-http", url="https://example.test/mcp", auth=auth)
+    assert transport.auth == auth
+
+
+def test_malformed_yaml_diagnostic_does_not_echo_inline_secret(tmp_path) -> None:
+    config = tmp_path / "runtime.yaml"
+    secret = "YAML_LEAK"  # Short enough to appear in PyYAML's source excerpt.
+    config.write_text("auth: {value: " + secret)
+    with pytest.raises(ValueError, match="not parseable YAML") as caught:
+        load_runtime_config(config)
+    assert secret not in str(caught.value)
+    assert secret not in "".join(traceback.format_exception(caught.value))
+
+
+def test_capability_auth_argument_is_not_treated_as_transport_auth() -> None:
+    data = {**MINIMAL_CONFIG, "capabilities": [{**MINIMAL_CONFIG["capabilities"][0], "arguments": {"auth": {"mode": "device"}}}]}
+    config = RuntimeConfig.model_validate(data)
+    assert config.capabilities[0].arguments["auth"] == {"mode": "device"}
+
+
+def test_stdio_env_named_auth_is_not_a_transport_auth_block() -> None:
+    config = RuntimeConfig(servers=(ServerConfig(name="device", transport={"kind": "stdio", "command": "device", "env": {"auth": "device-token"}}),))
+    assert config.servers[0].transport.env["auth"] == "device-token"
+
+
+def test_yaml_alias_cycle_does_not_recurse_in_auth_screen() -> None:
+    cyclic = {}
+    cyclic["extra"] = cyclic
+    with pytest.raises(ValidationError):
+        RuntimeConfig.model_validate(cyclic)

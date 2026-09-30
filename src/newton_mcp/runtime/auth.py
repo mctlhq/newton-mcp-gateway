@@ -9,18 +9,18 @@ module without an import cycle. See docs/action-runtime.md and design.md for
 
 from __future__ import annotations
 
+import logging
 import os
-from collections.abc import Iterable, Mapping
+from collections.abc import Iterator, Iterable, Mapping
+from contextlib import contextmanager
+from contextvars import ContextVar
+from typing import Any
 
 from newton_mcp.runtime.audit import REDACTED
 from newton_mcp.runtime.config import HttpAuth
 
-#: Control characters (including DEL) a resolved header value must not
-#: contain. `\t` is excluded deliberately -- httpx2/h11 accept a literal tab
-#: inside a header value (RFC 9110 allows it as `obs-text`/whitespace); CR
-#: and LF are what make header/request-smuggling injection possible, and the
-#: rest of C0 plus DEL are rejected defensively alongside them.
-_FORBIDDEN_VALUE_CHARS = frozenset(chr(c) for c in range(0x00, 0x20) if chr(c) != "\t") | {"\x7f"}
+# Reject all C0 controls and DEL before constructing an HTTP client.
+_FORBIDDEN_VALUE_CHARS = frozenset(chr(c) for c in range(0x20)) | {"\x7f"}
 
 
 class MissingAuthSecret(Exception):
@@ -71,7 +71,7 @@ def resolve_auth_header(
         )
     header_value = f"{auth.scheme} {value}" if auth.scheme else value
     try:
-        header_value.encode("latin-1")
+        header_value.encode("ascii")
     except UnicodeEncodeError:
         raise MissingAuthSecret(
             f"server {server_name!r}'s environment variable {auth.env!r} cannot be encoded into "
@@ -98,3 +98,76 @@ def redact(text: str, secrets: Iterable[str]) -> str:
             continue
         result = result.replace(secret, REDACTED)
     return result
+
+
+class AuthTransportError(Exception):
+    """A class-only failure at the authenticated SDK boundary."""
+
+    def __init__(self, exc: BaseException) -> None:
+        self.summary = exception_class_summary(exc)
+        super().__init__(f"transport failure ({self.summary})")
+
+
+def exception_class_summary(exc: BaseException) -> str:
+    if isinstance(exc, BaseExceptionGroup):
+        members = ", ".join(exception_class_summary(sub) for sub in exc.exceptions)
+        return f"{type(exc).__name__}[{members}]"
+    return type(exc).__name__
+
+
+def safe_exception_group(exc: BaseExceptionGroup) -> BaseExceptionGroup:
+    """Keep cancellation members while discarding SDK-controlled messages."""
+    members: list[BaseException] = []
+    for member in exc.exceptions:
+        if isinstance(member, BaseExceptionGroup):
+            members.append(safe_exception_group(member))
+        elif isinstance(member, Exception):
+            members.append(AuthTransportError(member))
+        else:
+            members.append(member)
+    return BaseExceptionGroup("authenticated transport failure", members)
+
+
+_AUTHENTICATED_DIAGNOSTICS: ContextVar[bool] = ContextVar("authenticated_diagnostics", default=False)
+
+
+def _install_safe_record_factory() -> None:
+    """Sanitize records before any handler can render an SDK traceback.
+
+    The hook delegates to the previous factory and changes records only in
+    authenticated SDK operations. Context variables isolate concurrent clients;
+    SDK child tasks inherit their connection's diagnostic policy. Caller code
+    outside those operations retains its ordinary logging behavior.
+    """
+    previous = logging.getLogRecordFactory()
+    if getattr(previous, "_newton_auth_boundary", False):
+        return
+
+    def factory(*args: Any, **kwargs: Any) -> logging.LogRecord:
+        record = previous(*args, **kwargs)
+        if _AUTHENTICATED_DIAGNOSTICS.get():
+            # Never format SDK-controlled messages: even repr-escaped or
+            # encoded credentials must not reach handlers.
+            record.msg = "authenticated transport diagnostic"
+            record.args = ()
+            if record.exc_info is not None:
+                exc = record.exc_info[1]
+                summary = exception_class_summary(exc) if exc is not None else "unknown"
+                record.msg += f" (transport failure: {summary})"
+                record.exc_info = None
+            record.exc_text = None
+            record.stack_info = None
+        return record
+
+    factory._newton_auth_boundary = True
+    logging.setLogRecordFactory(factory)
+
+
+@contextmanager
+def authenticated_diagnostics() -> Iterator[None]:
+    _install_safe_record_factory()
+    token = _AUTHENTICATED_DIAGNOSTICS.set(True)
+    try:
+        yield
+    finally:
+        _AUTHENTICATED_DIAGNOSTICS.reset(token)

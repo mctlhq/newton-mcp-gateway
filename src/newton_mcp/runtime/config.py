@@ -54,7 +54,7 @@ class AuthConfigError(Exception):
     """
 
 
-def _validate_auth_mapping(auth: Any, *, server_name: str | None = None) -> None:
+def _validate_auth_mapping(auth: Any) -> None:
     """Screen a raw `auth` mapping. Raises `AuthConfigError`; never echoes a value.
 
     Called from three raw-input screens (`ServerConfig`, `HttpTransport`, and
@@ -65,46 +65,66 @@ def _validate_auth_mapping(auth: Any, *, server_name: str | None = None) -> None
     input is harmless, which is what makes the ServerConfig-level screen and
     the transport-level screen able to both run without conflict.
     """
-    context = f" (server {server_name!r})" if server_name else ""
+    if isinstance(auth, HttpAuth):
+        auth = auth.model_dump()
     if not isinstance(auth, dict):
         raise AuthConfigError(
-            f"transport.auth must be a mapping with keys header/scheme/env{context}; "
+            f"transport.auth must be a mapping with keys header/scheme/env; "
             "the rejected value is intentionally not shown"
         )
     extra = set(auth) - _ALLOWED_AUTH_KEYS
     if extra:
         raise AuthConfigError(
-            f"transport.auth may only contain {sorted(_ALLOWED_AUTH_KEYS)}{context}; an unsupported "
+            f"transport.auth may only contain {sorted(_ALLOWED_AUTH_KEYS)}; an unsupported "
             "auth field was given. A secret value must never appear in runtime.yaml -- name an "
             "environment variable with `env:` instead. (The rejected key and its value are "
             "intentionally not shown.)"
         )
 
     header = auth.get("header")
-    if not isinstance(header, str) or not _HTTP_TOKEN_RE.match(header):
+    if not isinstance(header, str) or not _HTTP_TOKEN_RE.fullmatch(header):
         raise AuthConfigError(
-            f"transport.auth.header must be a valid HTTP field-name token (RFC 9110){context}; "
+            f"transport.auth.header must be a valid HTTP field-name token (RFC 9110); "
             "the rejected value is intentionally not shown"
         )
     if header.casefold() in _SDK_MANAGED_HEADERS:
         raise AuthConfigError(
             f"transport.auth.header must not name an SDK-managed header "
-            f"({sorted(_SDK_MANAGED_HEADERS)}){context}; got {header.casefold()!r}"
+            f"({sorted(_SDK_MANAGED_HEADERS)}); got {header.casefold()!r}"
         )
 
     scheme = auth.get("scheme")
-    if scheme is not None and (not isinstance(scheme, str) or not _HTTP_TOKEN_RE.match(scheme)):
+    if scheme is not None and (not isinstance(scheme, str) or not _HTTP_TOKEN_RE.fullmatch(scheme)):
         raise AuthConfigError(
             f"transport.auth.scheme, when present, must be a single HTTP token with no "
-            f"whitespace{context}; the rejected value is intentionally not shown"
+            f"whitespace; the rejected value is intentionally not shown"
         )
 
     env = auth.get("env")
-    if not isinstance(env, str) or not _ENV_NAME_RE.match(env):
+    if not isinstance(env, str) or not _ENV_NAME_RE.fullmatch(env):
         raise AuthConfigError(
             f"transport.auth.env must match ^[A-Za-z_][A-Za-z0-9_]*$ (a POSIX environment "
-            f"variable name){context}; the rejected value is intentionally not shown"
+            f"variable name); the rejected value is intentionally not shown"
         )
+
+
+def _screen_nested_auth(data: Any, seen: set[int] | None = None) -> None:
+    """Reject inline auth secrets even inside malformed root/server containers."""
+    if not isinstance(data, (dict, list, tuple)):
+        return
+    seen = set() if seen is None else seen
+    if id(data) in seen:
+        return  # YAML aliases may share or cycle through a container.
+    seen.add(id(data))
+    if isinstance(data, dict):
+        if data.get("auth") is not None:
+            _validate_auth_mapping(data["auth"])
+        for key, value in data.items():
+            if key not in {"env", "arguments", "read_arguments"}:
+                _screen_nested_auth(value, seen)
+    elif isinstance(data, (list, tuple)):
+        for value in data:
+            _screen_nested_auth(value, seen)
 
 
 def _canonical_url(url: str) -> str:
@@ -152,7 +172,7 @@ def _canonical_url(url: str) -> str:
 
 
 class StdioTransport(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="forbid", hide_input_in_errors=True)
 
     kind: Literal["stdio"]
     command: str
@@ -191,15 +211,21 @@ class HttpAuth(BaseModel):
     `newton_mcp.runtime.auth.resolve_auth_header()`.
     """
 
-    model_config = ConfigDict(extra="forbid", frozen=True)
+    model_config = ConfigDict(extra="forbid", frozen=True, hide_input_in_errors=True)
 
     header: str
     scheme: str | None = None
     env: str
 
+    @model_validator(mode="before")
+    @classmethod
+    def _screen_raw_auth(cls, data: Any) -> Any:
+        _validate_auth_mapping(data)
+        return data
+
 
 class HttpTransport(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="forbid", hide_input_in_errors=True)
 
     kind: Literal["streamable-http"]
     url: str
@@ -231,7 +257,7 @@ Transport = Annotated[StdioTransport | HttpTransport, Field(discriminator="kind"
 
 
 class ServerConfig(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="forbid", hide_input_in_errors=True)
 
     name: str
     transport: Transport
@@ -254,6 +280,7 @@ class ServerConfig(BaseModel):
         proceed to `HttpTransport`'s own (now redundant, but still safe)
         screen. `auth: null` is treated as omitted, same as everywhere else.
         """
+        _screen_nested_auth(data)
         if not isinstance(data, dict):
             return data
         transport = data.get("transport")
@@ -262,12 +289,9 @@ class ServerConfig(BaseModel):
         auth = transport["auth"]
         if auth is None:
             return data
-        name = data.get("name")
-        server_name = name if isinstance(name, str) else None
         if transport.get("kind") != "streamable-http":
-            suffix = f" (server {server_name!r})" if server_name else ""
-            raise AuthConfigError(f"transport.auth is only supported for a streamable-http transport{suffix}")
-        _validate_auth_mapping(auth, server_name=server_name)
+            raise AuthConfigError("transport.auth is only supported for a streamable-http transport")
+        _validate_auth_mapping(auth)
         return data
 
     @property
@@ -332,7 +356,7 @@ class ServerConfig(BaseModel):
 
 
 class TargetMatch(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="forbid", hide_input_in_errors=True)
 
     type: str
     locations: tuple[str, ...] = ()
@@ -340,7 +364,7 @@ class TargetMatch(BaseModel):
 
 
 class CapabilityConfig(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="forbid", hide_input_in_errors=True)
 
     server: str
     tool: str
@@ -370,10 +394,23 @@ class CapabilityConfig(BaseModel):
 
 
 class RuntimeConfig(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="forbid", hide_input_in_errors=True)
 
     servers: tuple[ServerConfig, ...] = ()
     capabilities: tuple[CapabilityConfig, ...] = ()
+
+    @model_validator(mode="before")
+    @classmethod
+    def _screen_raw_config(cls, data: Any) -> Any:
+        # Capability arguments are application data, not transport auth.
+        # Do not impose an auth schema on an actuator argument named "auth".
+        if isinstance(data, dict):
+            for key, value in data.items():
+                if key != "capabilities":
+                    _screen_nested_auth(value)
+        else:
+            _screen_nested_auth(data)
+        return data
 
     @property
     def servers_by_name(self) -> dict[str, ServerConfig]:
@@ -448,7 +485,7 @@ def load_runtime_config(path: str | Path | None = None) -> RuntimeConfig:
 
     try:
         data = yaml.safe_load(raw_text)
-    except yaml.YAMLError as exc:
-        raise ValueError(f"runtime config file {resolved} is not parseable YAML: {exc}") from None
+    except yaml.YAMLError:
+        raise ValueError(f"runtime config file {resolved} is not parseable YAML") from None
 
-    return RuntimeConfig.model_validate(data or {})
+    return RuntimeConfig.model_validate({} if data is None else data)

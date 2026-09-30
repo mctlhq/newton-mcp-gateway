@@ -8,7 +8,7 @@ and approval are out of scope for this proposal; see docs/action-runtime.md.
 from __future__ import annotations
 
 from collections.abc import AsyncIterator, Callable
-from contextlib import AbstractAsyncContextManager, asynccontextmanager
+from contextlib import AbstractAsyncContextManager, AsyncExitStack, asynccontextmanager
 from typing import TYPE_CHECKING, Any, Literal, Protocol
 
 import anyio
@@ -17,7 +17,14 @@ from mcp.client.streamable_http import streamable_http_client
 from mcp_types import Implementation, ListToolsResult
 from pydantic import BaseModel, ConfigDict
 
-from newton_mcp.runtime.auth import MissingAuthSecret, resolve_auth_header
+from newton_mcp.runtime.auth import (
+    AuthTransportError,
+    MissingAuthSecret,
+    authenticated_diagnostics,
+    exception_class_summary,
+    resolve_auth_header,
+    safe_exception_group,
+)
 from newton_mcp.runtime.config import CapabilityConfig, HttpTransport, RuntimeConfig, ServerConfig, StdioTransport
 
 if TYPE_CHECKING:
@@ -43,33 +50,74 @@ def _default_http_client_builder(headers: dict[str, str]) -> "httpx2.AsyncClient
     return create_mcp_http_client(headers=headers)
 
 
+class _AuthenticatedClient:
+    """Expose only the catalog/executor operations through a safe SDK boundary."""
+
+    def __init__(self, client: Any) -> None:
+        self._client = client
+
+    @property
+    def server_info(self) -> Implementation | None:
+        return self._client.server_info
+
+    async def _request(self, method: str, *args: Any, **kwargs: Any) -> Any:
+        with authenticated_diagnostics():
+            try:
+                return await getattr(self._client, method)(*args, **kwargs)
+            except Exception as exc:
+                raise AuthTransportError(exc) from None
+            except BaseExceptionGroup as exc:
+                raise safe_exception_group(exc) from None
+
+    async def list_tools(self, *, cursor: str | None = None) -> ListToolsResult:
+        return await self._request("list_tools", cursor=cursor)
+
+    async def call_tool(self, name: str, arguments: dict[str, Any]) -> Any:
+        return await self._request("call_tool", name, arguments)
+
+
 @asynccontextmanager
 async def _authenticated_http_client(
     url: str, headers: dict[str, str], builder: HttpClientBuilder
 ) -> AsyncIterator[SupportsListTools]:
-    """Build an authenticated streamable-http `Client`, owning the `httpx2.AsyncClient`'s lifecycle.
+    """Own both contexts; sanitize SDK failures without rewriting caller errors.
 
-    `mcp.client.streamable_http.streamable_http_client` only enters a
-    *caller-supplied* `http_client` onto its own exit stack when it created
-    that client itself -- it will not close one we hand it. Nesting the
-    `async with` here instead makes this wrapper the owner: `builder(headers)`
-    is closed on the success path and on any exception path alike, including
-    cancellation, because that is what an `async with` block already
-    guarantees -- no extra `try`/`finally` is needed for that half of the
-    contract.
-
-    No exception is caught or reclassified here. `CapabilityCatalog.refresh()`
-    is what turns a connect/list failure for an authenticated server into a
-    class-only diagnostic (`_catalog_problem_detail`); `Executor.execute()`
-    already does the same for a call failure (`_classify_call_failure`).
-    Sanitizing here instead would also have to catch -- and so could not tell
-    apart from an SDK failure -- an exception a caller's own code inside the
-    `async with self._client_factory(server) as client:` block deliberately
-    raises, which must propagate untouched.
+    Close the SDK normally rather than throwing caller-body exceptions into
+    its task groups. The caller's exception/cancellation keeps its identity;
+    close failures cannot replace it. SDK cancellation is never reclassified.
     """
-    async with builder(headers) as http_client:  # we own it: the SDK will not close it
-        async with Client(streamable_http_client(url, http_client=http_client)) as client:
-            yield client  # type: ignore[misc]
+    stack = AsyncExitStack()
+    body_failed = False
+    try:
+        with authenticated_diagnostics():
+            try:
+                http_client = await stack.enter_async_context(builder(headers))
+                client = await stack.enter_async_context(
+                    Client(streamable_http_client(url, http_client=http_client))
+                )
+            except Exception as exc:
+                raise AuthTransportError(exc) from None
+            except BaseExceptionGroup as exc:
+                body_failed = True
+                raise safe_exception_group(exc) from None
+            except BaseException:
+                body_failed = True
+                raise
+        try:
+            yield _AuthenticatedClient(client)
+        except BaseException:
+            body_failed = True
+            raise
+    finally:
+        with authenticated_diagnostics():
+            try:
+                await stack.aclose()
+            except Exception as exc:
+                if not body_failed:
+                    raise AuthTransportError(exc) from None
+            except BaseExceptionGroup as exc:
+                if not body_failed:
+                    raise safe_exception_group(exc) from None
 
 
 class SupportsListTools(Protocol):
@@ -170,7 +218,9 @@ def default_client_factory(
         if transport.auth is None:
             return Client(transport.url)  # type: ignore[return-value]
         header_name, header_value = resolve_auth_header(transport.auth, server_name=server.name)
-        return _authenticated_http_client(transport.url, {header_name: header_value}, http_client_builder)
+        return _authenticated_http_client(
+            transport.url, {header_name: header_value}, http_client_builder,
+        )
     else:  # pragma: no cover - the discriminated union covers every case
         raise ValueError(f"unsupported transport {transport!r}")
 
@@ -190,20 +240,6 @@ def _declares_auth(server: ServerConfig) -> bool:
     return isinstance(transport, HttpTransport) and transport.auth is not None
 
 
-def _exception_class_summary(exc: BaseException) -> str:
-    """A class-only description of `exc`, recursing into an `ExceptionGroup`'s members.
-
-    Never touches `str(exc)`/`repr(exc)` -- only `type(...).__name__` at every
-    level -- so a nested exception group from an authenticated connect/list/
-    call/close failure cannot smuggle a resolved header value out through a
-    member exception's message.
-    """
-    if isinstance(exc, BaseExceptionGroup):
-        inner = ", ".join(_exception_class_summary(sub) for sub in exc.exceptions)
-        return f"{type(exc).__name__}[{inner}]"
-    return type(exc).__name__
-
-
 def _catalog_problem_detail(server: ServerConfig, exc: Exception) -> str:
     """A safe `CatalogProblem.detail` for a `server_unavailable` failure.
 
@@ -219,10 +255,12 @@ def _catalog_problem_detail(server: ServerConfig, exc: Exception) -> str:
     happens here, before `_truncate()`, and never re-reads the environment:
     the value that failed may have already rotated.
     """
+    if isinstance(exc, AuthTransportError):
+        return str(exc)
     if isinstance(exc, MissingAuthSecret):
         return str(exc)
     if _declares_auth(server):
-        return f"transport failure ({_exception_class_summary(exc)})"
+        return f"transport failure ({exception_class_summary(exc)})"
     return repr(exc)
 
 

@@ -16,6 +16,10 @@ around each test's calls, the same thing the ASGI lifespan protocol would do.
 from __future__ import annotations
 
 import functools
+import logging
+import traceback
+
+import anyio
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
@@ -30,6 +34,8 @@ from newton_mcp.action.approval import create_approval
 from newton_mcp.action.contract import PhysicalActionContract, Risk, Target, Verification
 from newton_mcp.runtime.audit import MemoryAuditSink
 from newton_mcp.runtime.catalog import CapabilityCatalog, HttpClientBuilder, default_client_factory
+from newton_mcp.runtime.auth import AuthTransportError, MissingAuthSecret
+from newton_mcp.runtime.executor import ExecutorError
 from newton_mcp.runtime.config import (
     CapabilityConfig,
     HttpTransport,
@@ -186,13 +192,15 @@ async def test_auth_header_reaches_connect_list_tools_and_call_tool(monkeypatch:
         record = _authorized_record()
         approval = _approval(candidate, record)
         executor = Executor(catalog, client_factory=factory, sink=MemoryAuditSink())
+        # Reuse the approval created before rotation, resolving the new value only at connect.
+        monkeypatch.setenv(AUTH_ENV_VAR, "rotated-token")
 
         record, outcome = await executor.execute(
             candidate, record, approval=approval, policy_version="policy.v1", now=NOW
         )
         assert outcome.state == ActionState.EXECUTED
         assert recorded, "call_tool should have produced at least one recorded request"
-        assert all(h.get("authorization") == f"Bearer {SENTINEL}" for h in recorded)
+        assert all(h.get("authorization") == "Bearer rotated-token" for h in recorded)
 
 
 # ---------------------------------------------------------------------------
@@ -240,6 +248,8 @@ async def test_full_cycle_leaks_sentinel_nowhere(monkeypatch: pytest.MonkeyPatch
             now_fn=lambda: NOW,
         )
         assert final_state == ActionState.SUCCEEDED
+        assert recorded
+        assert all(h.get("authorization") == f"Bearer {SENTINEL}" for h in recorded)
 
         haystack_parts = [
             server.transport_fingerprint,
@@ -280,13 +290,8 @@ async def test_http_client_closes_after_success_and_after_exception(monkeypatch:
         class _Marker(Exception):
             pass
 
-        # The MCP SDK's own session teardown runs inside a nested `anyio`
-        # task group, so an exception raised in the caller's `async with`
-        # body surfaces wrapped in a `BaseExceptionGroup` by the time it
-        # reaches here -- that wrapping is the SDK's, not this wrapper's:
-        # `_authenticated_http_client` neither catches nor reclassifies
-        # anything. What matters is that the marker itself is neither
-        # swallowed nor replaced by a generic transport error.
+        # Caller-body errors retain their identity; SDK teardown cannot
+        # replace them with a transport error.
         with pytest.raises(BaseException) as excinfo:
             async with default_client_factory(server, http_client_builder=builder) as _client:
                 raise _Marker("caller-body exception must propagate untouched")
@@ -376,3 +381,227 @@ async def test_transport_failure_for_authenticated_server_is_class_only_and_leak
     assert SENTINEL not in problem.detail
     assert "Authorization" not in problem.detail
     assert "ExplodingAuthError" in problem.detail
+
+
+@pytest.mark.parametrize("stage", ["builder", "http_enter", "connect", "list", "call", "sdk_close", "http_close"])
+@pytest.mark.parametrize("grouped", [False, True])
+async def test_authenticated_boundary_contains_failures_and_logs(
+    monkeypatch, caplog, stage, grouped,
+) -> None:
+    import newton_mcp.runtime.catalog as module
+
+    monkeypatch.setenv(AUTH_ENV_VAR, SENTINEL)
+    caplog.set_level(logging.DEBUG)
+    closed = []
+
+    def fail(at):
+        if stage != at:
+            return
+        # Rotate after the header was captured: redaction must not re-read env.
+        monkeypatch.setenv(AUTH_ENV_VAR, "rotated-token")
+        error = RuntimeError(f"reflected Bearer {SENTINEL}")
+        if grouped:
+            error = ExceptionGroup(f"group {SENTINEL}", [ExceptionGroup("nested", [error])])
+        try:
+            raise error
+        except Exception:
+            logging.getLogger("mcp.test_transport").exception("reflected %s", SENTINEL)
+            raise
+
+    class HttpClient:
+        async def __aenter__(self):
+            fail("http_enter")
+            return self
+
+        async def __aexit__(self, *args):
+            closed.append("http")
+            fail("http_close")
+
+    class SdkClient:
+        server_info = None
+
+        async def __aenter__(self):
+            fail("connect")
+            return self
+
+        async def __aexit__(self, *args):
+            closed.append("sdk")
+            fail("sdk_close")
+
+        async def list_tools(self, **kwargs):
+            fail("list")
+
+        async def call_tool(self, *args):
+            fail("call")
+
+    def builder(headers):
+        assert headers["Authorization"] == f"Bearer {SENTINEL}"
+        fail("builder")
+        return HttpClient()
+
+    monkeypatch.setattr(module, "Client", lambda transport: SdkClient())
+    with pytest.raises((AuthTransportError, ExceptionGroup)) as caught:
+        async with default_client_factory(_auth_server(), http_client_builder=builder) as client:
+            await client.list_tools()
+            await client.call_tool("ping", {})
+    assert "RuntimeError" in str(caught.value)
+    for rendered in (str(caught.value), repr(caught.value), "".join(traceback.format_exception(caught.value)), caplog.text):
+        assert SENTINEL not in rendered
+    if stage not in ("builder", "http_enter"):
+        assert "http" in closed
+    if stage in ("list", "call", "sdk_close", "http_close"):
+        assert closed == ["sdk", "http"]
+
+
+@pytest.mark.parametrize("value", ["tokené", "token\tbits", "token\n"])
+async def test_invalid_secret_never_reaches_builder(monkeypatch, value) -> None:
+    monkeypatch.setenv(AUTH_ENV_VAR, value)
+    calls = []
+    def builder(headers):
+        calls.append(headers)
+        raise AssertionError("must not construct a client")
+    with pytest.raises(MissingAuthSecret):
+        async with default_client_factory(_auth_server(), http_client_builder=builder):
+            pass
+    assert calls == []
+
+
+@pytest.mark.parametrize("field,new_value", [("env", "OTHER_TOKEN"), ("header", "X-Api-Key"), ("scheme", "Token")])
+async def test_auth_identity_change_rejects_old_candidate_before_connect(monkeypatch, field, new_value) -> None:
+    monkeypatch.setenv(AUTH_ENV_VAR, SENTINEL)
+    server = _auth_server()
+    candidate = _candidate(server)
+    record = _authorized_record()
+    approval = _approval(candidate, record)
+    auth = server.transport.auth.model_copy(update={field: new_value})
+    changed = server.model_copy(update={"transport": server.transport.model_copy(update={"auth": auth})})
+    calls = []
+    def factory(server):
+        calls.append(server)
+        raise AssertionError("must reject before connecting")
+    executor = Executor(CapabilityCatalog(RuntimeConfig(servers=(changed,))), client_factory=factory)
+    with pytest.raises(ExecutorError):
+        await executor.execute(candidate, record, approval=approval, policy_version="policy.v1", now=NOW)
+    assert calls == []
+
+
+async def test_authenticated_client_closes_on_cancellation(monkeypatch) -> None:
+    monkeypatch.setenv(AUTH_ENV_VAR, SENTINEL)
+    recorded = []
+    created = []
+    async with _running_fake_app(recorded) as app:
+        def builder(headers):
+            client = _asgi_http_client_builder(app)(headers)
+            created.append(client)
+            return client
+        with anyio.CancelScope() as scope:
+            async with default_client_factory(_auth_server(), http_client_builder=builder):
+                scope.cancel()
+                await anyio.sleep(0)
+        assert scope.cancelled_caught
+        assert created[-1].is_closed
+
+
+async def test_authenticated_transport_does_not_forward_redirect(monkeypatch) -> None:
+    monkeypatch.setenv(AUTH_ENV_VAR, SENTINEL)
+    requests = []
+    def respond(request):
+        requests.append(request)
+        return httpx2.Response(307, headers={"location": "https://other.example/mcp"})
+    created = []
+    def builder(headers):
+        client = httpx2.AsyncClient(headers=headers, transport=httpx2.MockTransport(respond), follow_redirects=True)
+        created.append(client)
+        return client
+    with pytest.raises(AuthTransportError):
+        async with default_client_factory(_auth_server(), http_client_builder=builder):
+            pass
+    assert requests
+    assert all(request.url.host == "localhost" for request in requests)
+    assert created[-1].is_closed
+
+
+async def test_real_sdk_connection_failure_is_safe_in_exception_and_logs(monkeypatch, caplog) -> None:
+    monkeypatch.setenv(AUTH_ENV_VAR, SENTINEL)
+    caplog.set_level(logging.DEBUG)
+    created = []
+    def respond(request):
+        raise RuntimeError(f"request headers: {request.headers!r}")
+    def builder(headers):
+        client = httpx2.AsyncClient(headers=headers, transport=httpx2.MockTransport(respond))
+        created.append(client)
+        return client
+    with pytest.raises(Exception) as caught:
+        async with default_client_factory(_auth_server(), http_client_builder=builder):
+            pass
+    for rendered in (str(caught.value), repr(caught.value), "".join(traceback.format_exception(caught.value)), caplog.text):
+        assert SENTINEL not in rendered
+    assert created[-1].is_closed
+
+
+async def test_caller_exception_and_logs_keep_identity_even_when_close_fails(monkeypatch, caplog) -> None:
+    import newton_mcp.runtime.catalog as module
+    monkeypatch.setenv(AUTH_ENV_VAR, SENTINEL)
+    caplog.set_level(logging.INFO)
+    marker = ValueError("caller marker")
+    class Context:
+        server_info = None
+        async def __aenter__(self):
+            return self
+        async def __aexit__(self, *args):
+            raise RuntimeError(SENTINEL)
+    monkeypatch.setattr(module, "Client", lambda transport: Context())
+    with pytest.raises(ValueError) as caught:
+        async with default_client_factory(_auth_server(), http_client_builder=lambda headers: Context()):
+            logging.getLogger("caller").info("caller diagnostic stays unchanged")
+            raise marker
+    assert caught.value is marker
+    assert "caller diagnostic stays unchanged" in caplog.text
+    assert SENTINEL not in "".join(traceback.format_exception(caught.value))
+
+
+async def test_sdk_mixed_exception_group_preserves_cancellation_without_secret(monkeypatch) -> None:
+    import asyncio
+    import newton_mcp.runtime.catalog as module
+    monkeypatch.setenv(AUTH_ENV_VAR, SENTINEL)
+    cancelled = asyncio.CancelledError()
+    class Context:
+        server_info = None
+        async def __aenter__(self):
+            return self
+        async def __aexit__(self, *args):
+            pass
+        async def list_tools(self, **kwargs):
+            raise BaseExceptionGroup(SENTINEL, [cancelled, RuntimeError(SENTINEL)])
+    monkeypatch.setattr(module, "Client", lambda transport: Context())
+    with pytest.raises(BaseExceptionGroup) as caught:
+        async with default_client_factory(_auth_server(), http_client_builder=lambda headers: Context()) as client:
+            await client.list_tools()
+    assert caught.value.exceptions[0] is cancelled
+    assert isinstance(caught.value.exceptions[1], AuthTransportError)
+    assert SENTINEL not in "".join(traceback.format_exception(caught.value))
+
+
+async def test_connect_cancellation_is_not_replaced_by_close_failure(monkeypatch) -> None:
+    import asyncio
+    import newton_mcp.runtime.catalog as module
+    monkeypatch.setenv(AUTH_ENV_VAR, SENTINEL)
+    cancelled = asyncio.CancelledError()
+    closed = []
+    class HttpContext:
+        async def __aenter__(self):
+            return self
+        async def __aexit__(self, *args):
+            closed.append(True)
+            raise RuntimeError(SENTINEL)
+    class SdkContext:
+        async def __aenter__(self):
+            raise cancelled
+        async def __aexit__(self, *args):
+            pass
+    monkeypatch.setattr(module, "Client", lambda transport: SdkContext())
+    with pytest.raises(asyncio.CancelledError) as caught:
+        async with default_client_factory(_auth_server(), http_client_builder=lambda headers: HttpContext()):
+            pass
+    assert caught.value is cancelled
+    assert closed == [True]
