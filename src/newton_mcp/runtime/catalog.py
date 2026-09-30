@@ -87,7 +87,7 @@ async def _authenticated_http_client(
     close failures cannot replace it. SDK cancellation is never reclassified.
     """
     stack = AsyncExitStack()
-    body_failed = False
+    failed = False
     try:
         with authenticated_diagnostics():
             try:
@@ -96,27 +96,28 @@ async def _authenticated_http_client(
                     Client(streamable_http_client(url, http_client=http_client))
                 )
             except Exception as exc:
+                failed = True
                 raise AuthTransportError(exc) from None
             except BaseExceptionGroup as exc:
-                body_failed = True
+                failed = True
                 raise safe_exception_group(exc) from None
             except BaseException:
-                body_failed = True
+                failed = True
                 raise
         try:
             yield _AuthenticatedClient(client)
         except BaseException:
-            body_failed = True
+            failed = True
             raise
     finally:
         with authenticated_diagnostics():
             try:
                 await stack.aclose()
             except Exception as exc:
-                if not body_failed:
+                if not failed:
                     raise AuthTransportError(exc) from None
             except BaseExceptionGroup as exc:
-                if not body_failed:
+                if not failed:
                     raise safe_exception_group(exc) from None
 
 

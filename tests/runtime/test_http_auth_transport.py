@@ -605,3 +605,32 @@ async def test_connect_cancellation_is_not_replaced_by_close_failure(monkeypatch
             pass
     assert caught.value is cancelled
     assert closed == [True]
+
+
+@pytest.mark.parametrize("grouped", [False, True])
+async def test_connect_failure_is_not_replaced_by_close_failure(monkeypatch, grouped) -> None:
+    import newton_mcp.runtime.catalog as module
+    monkeypatch.setenv(AUTH_ENV_VAR, SENTINEL)
+    closed = []
+    class HttpContext:
+        async def __aenter__(self):
+            return self
+        async def __aexit__(self, *args):
+            closed.append(True)
+            raise RuntimeError(SENTINEL)
+    class SdkContext:
+        async def __aenter__(self):
+            error = ConnectionError(SENTINEL)
+            if grouped:
+                error = ExceptionGroup(SENTINEL, [error])
+            raise error
+        async def __aexit__(self, *args):
+            pass
+    monkeypatch.setattr(module, "Client", lambda transport: SdkContext())
+    with pytest.raises(AuthTransportError) as caught:
+        async with default_client_factory(_auth_server(), http_client_builder=lambda headers: HttpContext()):
+            pass
+    assert "ConnectionError" in str(caught.value)
+    assert "RuntimeError" not in str(caught.value)
+    assert SENTINEL not in "".join(traceback.format_exception(caught.value))
+    assert closed == [True]
