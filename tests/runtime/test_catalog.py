@@ -141,8 +141,10 @@ async def test_unreachable_server_reports_problem_others_still_discovered() -> N
 
 async def test_servers_are_discovered_concurrently_and_snapshot_keeps_configured_order() -> None:
     entered: set[str] = set()
+    completed: list[str] = []
     both_entered = anyio.Event()
-    release = anyio.Event()
+    second_completed = anyio.Event()
+    release_first = anyio.Event()
 
     @asynccontextmanager
     async def factory(server: ServerConfig):
@@ -153,7 +155,8 @@ async def test_servers_are_discovered_concurrently_and_snapshot_keeps_configured
                 entered.add(server.name)
                 if len(entered) == 2:
                     both_entered.set()
-                await release.wait()
+                if server.name == "first":
+                    await release_first.wait()
                 return ListToolsResult(tools=[Tool(name=f"{server.name}_tool", input_schema={"type": "object"})])
 
         yield Session()
@@ -163,13 +166,25 @@ async def test_servers_are_discovered_concurrently_and_snapshot_keeps_configured
         capabilities=(_capability("first", "first_tool"), _capability("second", "second_tool")),
     )
     catalog = CapabilityCatalog(config, client_factory=factory)
+    discover_server = catalog._discover_server
+
+    async def track_completion(server: ServerConfig):
+        result = await discover_server(server)
+        completed.append(server.name)
+        if server.name == "second":
+            second_completed.set()
+        return result
+
+    catalog._discover_server = track_completion  # type: ignore[method-assign]
 
     async with anyio.create_task_group() as task_group:
         task_group.start_soon(catalog.refresh)
         await both_entered.wait()
-        release.set()
+        await second_completed.wait()
+        release_first.set()
 
     assert entered == {"first", "second"}
+    assert completed == ["second", "first"]
     assert [entry.server.name for entry in catalog.snapshot.entries] == ["first", "second"]
 
 

@@ -293,7 +293,8 @@ class CapabilityCatalog:
         Cancellation of this coroutine propagates: only `Exception` (including
         `ExceptionGroup`) is caught per server, never `BaseException` or
         `BaseExceptionGroup`. A cancelled refresh never assigns, so the previous
-        snapshot stays in place.
+        snapshot stays in place. Discovery starts one task per configured server;
+        server lists are operator-configured and expected to remain small.
         """
         servers = self._config.servers
         discoveries: list[
