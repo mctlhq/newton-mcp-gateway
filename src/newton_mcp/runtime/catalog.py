@@ -226,7 +226,6 @@ def default_client_factory(
         raise ValueError(f"unsupported transport {transport!r}")
 
 
-#: Backward-compatible alias for the previous private name.
 
 
 def _truncate(text: str) -> str:
