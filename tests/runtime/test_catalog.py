@@ -179,8 +179,9 @@ async def test_servers_are_discovered_concurrently_and_snapshot_keeps_configured
 
     async with anyio.create_task_group() as task_group:
         task_group.start_soon(catalog.refresh)
-        await both_entered.wait()
-        await second_completed.wait()
+        with anyio.fail_after(2):
+            await both_entered.wait()
+            await second_completed.wait()
         release_first.set()
 
     assert entered == {"first", "second"}
