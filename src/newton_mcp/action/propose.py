@@ -167,7 +167,8 @@ async def propose_action(
             contract = attempt_errors
             break
         raw_text, new_errors = attempt_errors
-        last_raw_text = raw_text
+        if raw_text is not None:
+            last_raw_text = raw_text
         errors.extend(new_errors)
 
         if attempt < MAX_ATTEMPTS:
