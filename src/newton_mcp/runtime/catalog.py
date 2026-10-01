@@ -295,26 +295,44 @@ class CapabilityCatalog:
         `BaseExceptionGroup`. A cancelled refresh never assigns, so the previous
         snapshot stays in place.
         """
+        servers = self._config.servers
+        discoveries: list[
+            tuple[dict[str, DiscoveredTool], ObservedServerInfo | None] | Exception | None
+        ] = [None] * len(servers)
+
+        async def discover_at(index: int, server: ServerConfig) -> None:
+            try:
+                with anyio.fail_after(self._server_timeout_seconds):
+                    discoveries[index] = await self._discover_server(server)
+            except Exception as exc:
+                discoveries[index] = exc
+
+        async with anyio.create_task_group() as task_group:
+            for index, server in enumerate(servers):
+                task_group.start_soon(discover_at, index, server)
+
         entries: list[CatalogEntry] = []
         problems: list[CatalogProblem] = []
         server_infos: list[ObservedServerInfo] = []
 
-        for server in self._config.servers:
+        for server, discovery in zip(servers, discoveries, strict=True):
             capabilities_for_server = [c for c in self._config.capabilities if c.server == server.name]
-
-            try:
-                with anyio.fail_after(self._server_timeout_seconds):
-                    discovered, observed_info = await self._discover_server(server)
-            except Exception as exc:
+            if isinstance(discovery, Exception):
                 problems.append(
                     CatalogProblem(
                         kind="server_unavailable",
                         server=server.name,
                         tool=None,
-                        detail=_truncate(_catalog_problem_detail(server, exc)),
+                        detail=_truncate(_catalog_problem_detail(server, discovery)),
                     )
                 )
                 continue
+
+            # Each task fills its own slot before the task group exits. A missing
+            # slot would indicate an internal programming error, not an empty listing.
+            if discovery is None:
+                raise RuntimeError(f"discovery task produced no result for server {server.name!r}")
+            discovered, observed_info = discovery
 
             if observed_info is not None:
                 server_infos.append(observed_info)

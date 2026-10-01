@@ -176,6 +176,7 @@ def test_requires_confirmation_raises_auto_to_confirm_but_does_not_upgrade_deny(
     )
     low_result = policy.evaluate(_contract(risk=Risk.LOW, requires_confirmation=True))
     assert low_result.decision is Decision.CONFIRM
+    assert low_result.matched_rule_name is None  # this rule is intentionally unnamed
 
     high_result = policy.evaluate(_contract(risk=Risk.HIGH, requires_confirmation=True))
     assert high_result.decision is Decision.DENY
@@ -191,6 +192,16 @@ def test_first_match_wins() -> None:
     )
     result = policy.evaluate(_contract(risk=Risk.LOW, confidence=None))
     assert result.decision is Decision.CONFIRM
+
+
+def test_named_matched_rule_is_structured_metadata_and_survives_confirmation_ceiling() -> None:
+    policy = Policy(
+        policy_version="v1",
+        rules=[PolicyRule(name="comfort-band", max_risk=Risk.LOW, decision=Decision.AUTO)],
+    )
+    result = policy.evaluate(_contract(risk=Risk.LOW, requires_confirmation=True))
+    assert result.decision is Decision.CONFIRM
+    assert result.matched_rule_name == "comfort-band"
 
 
 def test_empty_rules_returns_default_and_default_is_deny_when_omitted() -> None:
@@ -253,6 +264,7 @@ def test_out_of_range_value_denies_and_is_not_rescued_by_a_later_broader_rule() 
         policy_version="v1",
         rules=[
             PolicyRule(
+                name="temperature-range",
                 tool_name="set_target_temperature",
                 max_risk=Risk.LOW,
                 arg_ranges={"target_temperature_c": ValueRange(min=20, max=25)},
@@ -265,6 +277,7 @@ def test_out_of_range_value_denies_and_is_not_rescued_by_a_later_broader_rule() 
     result = policy.evaluate(_contract(), candidate)
     assert result.decision is Decision.DENY
     assert "target_temperature_c" in result.reason
+    assert result.matched_rule_name == "temperature-range"
 
 
 @pytest.mark.parametrize("bad_args", [{}, {"target_temperature_c": "23"}, {"target_temperature_c": True}])
