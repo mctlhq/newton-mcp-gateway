@@ -22,7 +22,6 @@ from __future__ import annotations
 import argparse
 import functools
 import os
-import re
 import secrets
 import sys
 from dataclasses import dataclass
@@ -187,19 +186,9 @@ def _count_calls(log: list[tuple[str, dict[str, Any]]], tool_name: str | None) -
     return sum(1 for name, _args in log if name == tool_name)
 
 
-_RULE_NAME_RE = re.compile(r"matched rule '([^']*)'")
-
-
-def _approved_by_for_auto(policy_version: str, reason: str) -> str:
-    """`policy:<policy_version>:<rule name>`, extracting the rule name from `reason`.
-
-    `PolicyResult` carries only the free-text `reason`
-    (`f"matched rule {rule.name!r}"` when the rule is named); this recovers
-    the quoted name for a readable `approved_by`, and falls back to the full
-    reason for an unnamed rule or the default decision.
-    """
-    match = _RULE_NAME_RE.search(reason)
-    rule_label = match.group(1) if match else reason
+def _approved_by_for_auto(policy_version: str, matched_rule_name: str | None, reason: str) -> str:
+    """Build the audit label from structured rule metadata, with a reason fallback."""
+    rule_label = matched_rule_name if matched_rule_name is not None else reason
     return f"policy:{policy_version}:{rule_label}"
 
 
@@ -374,7 +363,9 @@ async def run_demo(
                 audit_path=resolved_audit_path,
             )
     else:
-        approved_by = _approved_by_for_auto(policy.policy_version, decision.reason)
+        approved_by = _approved_by_for_auto(
+            policy.policy_version, decision.matched_rule_name, decision.reason
+        )
 
     approval = create_approval(
         candidate,

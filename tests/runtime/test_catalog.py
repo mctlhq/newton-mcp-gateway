@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+from contextlib import asynccontextmanager
+
 import anyio
 import pytest
 from mcp import Client, StdioServerParameters
 from mcp.types import ToolAnnotations
-from mcp_types import Tool
+from mcp_types import ListToolsResult, Tool
 
 from newton_mcp.runtime.catalog import CapabilityCatalog, CatalogSnapshot, default_client_factory
 from newton_mcp.runtime.config import (
@@ -135,6 +137,56 @@ async def test_unreachable_server_reports_problem_others_still_discovered() -> N
     assert len(unavailable) == 1
     assert unavailable[0].server == "hvac"
     assert {e.server.name for e in snapshot.entries} == {"lighting"}
+
+
+async def test_servers_are_discovered_concurrently_and_snapshot_keeps_configured_order() -> None:
+    entered: set[str] = set()
+    completed: list[str] = []
+    both_entered = anyio.Event()
+    second_completed = anyio.Event()
+    release_first = anyio.Event()
+
+    @asynccontextmanager
+    async def factory(server: ServerConfig):
+        class Session:
+            server_info = None
+
+            async def list_tools(self, *, cursor: str | None = None) -> ListToolsResult:
+                entered.add(server.name)
+                if len(entered) == 2:
+                    both_entered.set()
+                if server.name == "first":
+                    await release_first.wait()
+                return ListToolsResult(tools=[Tool(name=f"{server.name}_tool", input_schema={"type": "object"})])
+
+        yield Session()
+
+    config = RuntimeConfig(
+        servers=(_server_config("first"), _server_config("second")),
+        capabilities=(_capability("first", "first_tool"), _capability("second", "second_tool")),
+    )
+    catalog = CapabilityCatalog(config, client_factory=factory)
+    discover_server = catalog._discover_server
+
+    async def track_completion(server: ServerConfig):
+        result = await discover_server(server)
+        completed.append(server.name)
+        if server.name == "second":
+            second_completed.set()
+        return result
+
+    catalog._discover_server = track_completion  # type: ignore[method-assign]
+
+    async with anyio.create_task_group() as task_group:
+        task_group.start_soon(catalog.refresh)
+        with anyio.fail_after(2):
+            await both_entered.wait()
+            await second_completed.wait()
+        release_first.set()
+
+    assert entered == {"first", "second"}
+    assert completed == ["second", "first"]
+    assert [entry.server.name for entry in catalog.snapshot.entries] == ["first", "second"]
 
 
 async def test_exception_group_from_connect_is_reported_as_server_unavailable() -> None:

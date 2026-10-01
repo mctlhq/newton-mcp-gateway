@@ -72,6 +72,7 @@ class PolicyRule(BaseModel):
 class PolicyResult(BaseModel):
     decision: Decision
     reason: str
+    matched_rule_name: str | None = None
 
 
 class Policy(BaseModel):
@@ -120,10 +121,14 @@ class Policy(BaseModel):
         for rule in self.rules:
             matched, terminal_deny = self._match_rule(rule, contract, candidate)
             if terminal_deny is not None:
-                return self._apply_confirmation_ceiling(terminal_deny, contract)
+                return self._apply_confirmation_ceiling(
+                    terminal_deny.model_copy(update={"matched_rule_name": rule.name}), contract
+                )
             if matched:
                 reason = f"matched rule {rule.name!r}" if rule.name else f"matched rule max_risk={rule.max_risk}"
-                return self._apply_confirmation_ceiling(PolicyResult(decision=rule.decision, reason=reason), contract)
+                return self._apply_confirmation_ceiling(
+                    PolicyResult(decision=rule.decision, reason=reason, matched_rule_name=rule.name), contract
+                )
 
         default_result = PolicyResult(decision=self.default, reason="no rule matched; default applied")
         return self._apply_confirmation_ceiling(default_result, contract)
@@ -190,6 +195,7 @@ class Policy(BaseModel):
             return PolicyResult(
                 decision=Decision.CONFIRM,
                 reason=f"{result.reason}; raised to confirm because the contract requires confirmation",
+                matched_rule_name=result.matched_rule_name,
             )
         return result
 
