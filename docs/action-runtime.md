@@ -529,8 +529,7 @@ order:
    `BaseException`/`BaseExceptionGroup` (task/process cancellation) propagate untouched, exactly
    as `refresh()` already does.
 
-`newton_mcp.runtime.catalog.default_client_factory` (promoted from the previous private
-`_default_client_factory`) is reused here: `mcp.Client` already speaks both `list_tools` and
+`newton_mcp.runtime.catalog.default_client_factory` is reused here: `mcp.Client` already speaks both `list_tools` and
 `call_tool`, so there is exactly one place in the repo that maps a transport to a client.
 
 The executor captures a private deep copy of the candidate and server transport before

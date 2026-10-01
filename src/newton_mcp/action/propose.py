@@ -18,6 +18,7 @@ from pydantic import BaseModel, Field, ValidationError
 
 from newton_mcp.action.contract import Evidence, PhysicalActionContract
 from newton_mcp.action.prompts import build_contract_system_prompt, build_retry_suffix
+from newton_mcp.errors import InputValidationError
 from newton_mcp.newton.models import DataEvent, NewtonQueryRequest
 from newton_mcp.newton.protocol import NewtonBackend
 
@@ -60,14 +61,14 @@ def _normalise_observation(text_events: Sequence[str], json_events: Sequence[str
     """
     has_non_empty = any(t.strip() for t in text_events) or any(j.strip() for j in json_events)
     if not has_non_empty:
-        raise ValueError(
+        raise InputValidationError(
             "at least one of text_events or json_events must contain a non-empty entry"
         )
     for idx, entry in enumerate(json_events):
         try:
             json.loads(entry)
         except (json.JSONDecodeError, ValueError) as exc:
-            raise ValueError(f"json_events[{idx}] is not a parseable JSON document: {exc}") from None
+            raise InputValidationError(f"json_events[{idx}] is not a parseable JSON document: {exc}") from None
 
 
 def _normalise_allowed_goals(allowed_goals: Sequence[str] | None) -> tuple[str, ...]:
@@ -88,7 +89,7 @@ def _normalise_allowed_goals(allowed_goals: Sequence[str] | None) -> tuple[str, 
         seen.add(stripped)
         cleaned.append(stripped)
     if not cleaned:
-        raise ValueError("allowed_goals was supplied but contains no non-blank entry")
+        raise InputValidationError("allowed_goals was supplied but contains no non-blank entry")
     return tuple(cleaned)
 
 

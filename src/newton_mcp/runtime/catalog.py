@@ -227,7 +227,6 @@ def default_client_factory(
 
 
 #: Backward-compatible alias for the previous private name.
-_default_client_factory = default_client_factory
 
 
 def _truncate(text: str) -> str:

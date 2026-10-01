@@ -11,6 +11,8 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
+ImageMimeType = Literal["image/png", "image/jpeg"]
+
 EventType = Literal[
     "data.text",
     "data.json",
@@ -21,7 +23,7 @@ EventType = Literal[
 
 # image/png, image/jpeg -> file extension used when minting a Files API filename.
 # Reference: docs.archetypeai.app/api-reference/files/upload
-IMAGE_MIME_EXTENSIONS: dict[str, str] = {"image/png": ".png", "image/jpeg": ".jpg"}
+IMAGE_MIME_EXTENSIONS: dict[ImageMimeType, str] = {"image/png": ".png", "image/jpeg": ".jpg"}
 
 # Extensions /query recognizes as an image file_id (case-insensitive match at the
 # call site). Reference: docs.archetypeai.app/api-reference/query

@@ -231,6 +231,22 @@ class HttpTransport(BaseModel):
     url: str
     auth: HttpAuth | None = None
 
+    @field_validator("url")
+    @classmethod
+    def _validate_url_shape(cls, value: str) -> str:
+        # Fixed message: never reflect the URL, which may carry userinfo.
+        try:
+            parsed = urlsplit(value)
+            parsed.port  # noqa: B018 - raises ValueError on a malformed port
+        except ValueError:
+            raise ValueError("url is not a well-formed URL (check IPv6 brackets and port)") from None
+        if "[" in parsed.netloc or "]" in parsed.netloc:
+            hostport = parsed.netloc.rsplit("@", 1)[-1]
+            end = hostport.find("]")
+            if not hostport.startswith("[") or end == -1 or (hostport[end + 1 :] and not hostport[end + 1 :].startswith(":")):
+                raise ValueError("url is not a well-formed URL (check IPv6 brackets and port)")
+        return value
+
     @model_validator(mode="before")
     @classmethod
     def _screen_auth_block(cls, data: Any) -> Any:
