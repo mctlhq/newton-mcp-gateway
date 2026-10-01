@@ -1,6 +1,6 @@
 [project]
 name = "newton-mcp-gateway"
-version = "0.1.1"
+version = "0.2.0"
 description = "Experimental MCP bridge for Archetype AI Newton, and a closed-loop action runtime proposal for Physical AI."
 readme = "README.md"
 license = { text = "MIT" }
