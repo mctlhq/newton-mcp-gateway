@@ -166,10 +166,8 @@ def create_server(settings: Settings | None = None, backend: NewtonBackend | Non
         state = _state(ctx)
 
         if (image_base64 is None) == (file_id is None):
-            image_base64_state = "set" if image_base64 is not None else None
             raise InputValidationError(
-                "exactly one of image_base64 (with mime_type) or file_id is required, "
-                f"got image_base64={image_base64_state!r}, file_id={file_id!r}"
+                "exactly one of image_base64 (with mime_type) or file_id is required"
             )
 
         if image_base64 is not None:
@@ -213,7 +211,7 @@ def create_server(settings: Settings | None = None, backend: NewtonBackend | Non
                 raise InputValidationError(
                     f"file_id must end in one of {IMAGE_FILE_EXTENSIONS} (the documented "
                     "extension-bearing file_id, not a file_uid, since /query filters files "
-                    f"by extension), got {file_id!r}"
+                    "by extension)"
                 )
             events = []
             file_ids = [file_id]

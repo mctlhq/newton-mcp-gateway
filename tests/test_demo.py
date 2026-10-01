@@ -453,4 +453,22 @@ def test_demo_uses_the_shared_default_text_model(demo: ModuleType) -> None:
     from newton_mcp.config import DEFAULT_TEXT_MODEL
 
     assert demo.PROPOSE_MODEL is DEFAULT_TEXT_MODEL
+
+
+@pytest.mark.parametrize("override", [False, True])
+def test_demo_reads_one_runtime_snapshot(demo, tmp_path, monkeypatch, override):
+    original = demo.load_runtime_config
+    reads = []
+
+    def load_once(path):
+        reads.append(path)
+        assert len(reads) == 1, "proposal and catalog must share one config snapshot"
+        return original(path)
+
+    monkeypatch.setattr(demo, "load_runtime_config", load_once)
+    anyio.run(lambda: demo.run_demo(
+        audit_path=tmp_path / "audit.jsonl", deterministic=True,
+        contract_override=_announce_contract() if override else None,
+    ))
+    assert reads == [demo.RUNTIME_YAML_PATH]
     assert "Newton::" not in DEMO_PATH.read_text()
