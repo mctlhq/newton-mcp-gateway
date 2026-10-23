@@ -21,7 +21,7 @@ jobs:
       actions: read
     with:
       allowed-bots: "mctl-claude-remote,github-actions,dependabot,mctl-agents"
-      model-high: claude-sonnet-5
+      model-high: claude-sonnet-5-5
       conventions: |
         This is an experimental MCP gateway for Archetype AI Newton plus a
         closed-loop physical action runtime proposal. Review against AGENTS.md:
